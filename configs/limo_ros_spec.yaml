@@ -1,0 +1,67 @@
+schema_version: rosclaw.embodiment_card.v1
+robot_id: limo
+aliases: [limo, agilex_limo]
+body_type: multi_mode_mobile_base
+
+preferred_interfaces:
+  - capability_id: limo.navigate_to_pose
+    ros_kind: action
+    ros_name: /move_base
+    ros_type: move_base_msgs/MoveBaseAction
+    reason: "ROS navigation provides localization, path planning, and obstacle-aware control."
+    args_schema:
+      target_pose:
+        frame_id: {type: string, enum: [map, odom]}
+        x: {type: number}
+        y: {type: number}
+        yaw: {type: number, minimum: -3.141592653589793, maximum: 3.141592653589793}
+
+  - capability_id: limo.observe.status
+    ros_kind: topic
+    ros_name: /limo_status
+    ros_type: limo_base/LimoStatus
+    reason: "Read-only vehicle, battery, error, and motion-mode status."
+
+  - capability_id: limo.observe.odom
+    ros_kind: topic
+    ros_name: /odom
+    ros_type: nav_msgs/Odometry
+    reason: "Read-only pose and velocity feedback."
+
+  - capability_id: limo.observe.imu
+    ros_kind: topic
+    ros_name: /imu
+    ros_type: sensor_msgs/Imu
+    reason: "Read-only inertial feedback."
+
+  - capability_id: limo.observe.scan
+    ros_kind: topic
+    ros_name: /scan
+    ros_type: sensor_msgs/LaserScan
+    reason: "Optional read-only lidar scan used by the navigation costmaps."
+
+discouraged_interfaces:
+  - ros_kind: topic
+    ros_name: /cmd_vel
+    reason: "Direct velocity publishing bypasses navigation and requires a strict stop guard."
+
+safety_defaults:
+  max_linear_velocity: 0.2
+  max_angular_velocity: 0.5
+  max_motion_duration_sec: 1.0
+  require_stop_guard_for_velocity: true
+  require_obstacle_check_for_motion: true
+
+preconditions:
+  limo.navigate_to_pose:
+    - localization_ready
+    - costmap_ready
+    - obstacle_check_enabled
+    - limo_status_fresh
+    - error_code == 0
+    - motion_mode in [0, 1, 2]
+
+recovery_capabilities:
+  - safety.emergency_stop
+  - limo.observe.status
+  - limo.observe.odom

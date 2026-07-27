@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "rosclaw-limo": {
+      "command": "/absolute/path/to/limo-ros-mcp/.venv/bin/python",
+      "args": ["-m", "limo_ros_mcp.server"],
+      "env": {
+        "ROSCLAW_PROJECT_ROOT": "/absolute/path/to/rosclaw"
+      }
+    }
+  }
+}
