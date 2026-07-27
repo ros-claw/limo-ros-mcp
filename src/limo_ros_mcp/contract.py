@@ -1,4 +1,4 @@
-"""Static, source-backed safety contract for the AgileX LIMO ROS 1 driver."""
+"""Static, source-backed ROS contract for the AgileX LIMO inspection stack."""
 
 from __future__ import annotations
 
@@ -6,15 +6,175 @@ import copy
 import math
 from typing import Any
 
-LIMO_OBSERVATION_TOPICS: dict[str, tuple[str, str]] = {
-    "status": ("/limo_status", "limo_base/LimoStatus"),
-    "odometry": ("/odom", "nav_msgs/Odometry"),
-    "imu": ("/imu", "sensor_msgs/Imu"),
-    "laser_scan": ("/scan", "sensor_msgs/LaserScan"),
+LIMO_OBSERVATION_SPECS: dict[str, dict[str, Any]] = {
+    "status": {
+        "topic": "/limo_status",
+        "message_type": "limo_base/LimoStatus",
+        "category": "base",
+        "required": True,
+    },
+    "odometry": {
+        "topic": "/odom",
+        "message_type": "nav_msgs/Odometry",
+        "category": "base",
+        "required": True,
+    },
+    "imu": {
+        "topic": "/imu",
+        "message_type": "sensor_msgs/Imu",
+        "category": "base",
+        "required": True,
+    },
+    "laser_scan": {
+        "topic": "/scan",
+        "message_type": "sensor_msgs/LaserScan",
+        "category": "perception",
+        "required": False,
+        "patrol_required": True,
+    },
+    "localized_pose": {
+        "topic": "/amcl_pose",
+        "message_type": "geometry_msgs/PoseWithCovarianceStamped",
+        "category": "localization",
+        "required": False,
+        "patrol_required": True,
+    },
+    "fused_pose": {
+        "topic": "/robot_pose_ekf/odom_combined",
+        "message_type": "geometry_msgs/PoseWithCovarianceStamped",
+        "category": "localization",
+        "required": False,
+    },
+    "navigation_status": {
+        "topic": "/move_base/status",
+        "message_type": "actionlib_msgs/GoalStatusArray",
+        "category": "navigation",
+        "required": False,
+        "patrol_required": True,
+    },
+    "navigation_feedback": {
+        "topic": "/move_base/feedback",
+        "message_type": "move_base_msgs/MoveBaseActionFeedback",
+        "category": "navigation",
+        "required": False,
+    },
+    "navigation_result": {
+        "topic": "/move_base/result",
+        "message_type": "move_base_msgs/MoveBaseActionResult",
+        "category": "navigation",
+        "required": False,
+    },
+    "current_goal": {
+        "topic": "/move_base/current_goal",
+        "message_type": "geometry_msgs/PoseStamped",
+        "category": "navigation",
+        "required": False,
+    },
+    "global_plan": {
+        "topic": "/move_base/GlobalPlanner/plan",
+        "message_type": "nav_msgs/Path",
+        "category": "navigation",
+        "required": False,
+    },
+    "local_plan": {
+        "topic": "/move_base/TrajectoryPlannerROS/local_plan",
+        "message_type": "nav_msgs/Path",
+        "category": "navigation",
+        "required": False,
+    },
+    "map_metadata": {
+        "topic": "/map_metadata",
+        "message_type": "nav_msgs/MapMetaData",
+        "category": "mapping",
+        "required": False,
+        "patrol_required": True,
+    },
+    "map": {
+        "topic": "/map",
+        "message_type": "nav_msgs/OccupancyGrid",
+        "category": "mapping",
+        "required": False,
+    },
+    "global_costmap": {
+        "topic": "/move_base/global_costmap/costmap",
+        "message_type": "nav_msgs/OccupancyGrid",
+        "category": "mapping",
+        "required": False,
+    },
+    "local_costmap": {
+        "topic": "/move_base/local_costmap/costmap",
+        "message_type": "nav_msgs/OccupancyGrid",
+        "category": "mapping",
+        "required": False,
+    },
+    "diagnostics": {
+        "topic": "/diagnostics",
+        "message_type": "diagnostic_msgs/DiagnosticArray",
+        "category": "diagnostics",
+        "required": False,
+    },
+    "tf": {
+        "topic": "/tf",
+        "message_type": "tf2_msgs/TFMessage",
+        "category": "transforms",
+        "required": False,
+    },
+    "tf_static": {
+        "topic": "/tf_static",
+        "message_type": "tf2_msgs/TFMessage",
+        "category": "transforms",
+        "required": False,
+    },
+    "ros_logs": {
+        "topic": "/rosout_agg",
+        "message_type": "rosgraph_msgs/Log",
+        "category": "diagnostics",
+        "required": False,
+    },
+    "color_image": {
+        "topic": "/limo/color/image_raw",
+        "message_type": "sensor_msgs/Image",
+        "category": "camera",
+        "required": False,
+    },
+    "depth_image": {
+        "topic": "/limo/depth/image_raw",
+        "message_type": "sensor_msgs/Image",
+        "category": "camera",
+        "required": False,
+    },
+    "depth_points": {
+        "topic": "/limo/depth/points",
+        "message_type": "sensor_msgs/PointCloud2",
+        "category": "camera",
+        "required": False,
+    },
 }
 
+LIMO_OBSERVATION_TOPICS: dict[str, tuple[str, str]] = {
+    name: (str(spec["topic"]), str(spec["message_type"]))
+    for name, spec in LIMO_OBSERVATION_SPECS.items()
+}
+
+REQUIRED_LIMO_TOPICS = {
+    str(spec["topic"]) for spec in LIMO_OBSERVATION_SPECS.values() if spec.get("required")
+}
+
+LIMO_ERROR_FLAGS: dict[int, str] = {
+    0x0001: "battery_critically_low",
+    0x0002: "battery_low",
+    0x0004: "remote_control_disconnected",
+    0x0008: "motor_driver_1_error",
+    0x0010: "motor_driver_2_error",
+    0x0020: "motor_driver_3_error",
+    0x0040: "motor_driver_4_error",
+    0x0100: "drive_status_error",
+}
+
+MOTION_MODE_NAMES = {0: "four_wheel_differential", 1: "ackermann", 2: "mecanum", 255: "unknown"}
+
 LIMO_INTERFACE_CONTRACT: dict[str, Any] = {
-    "schema_version": "limo_ros_mcp.interface.v1",
+    "schema_version": "limo_ros_mcp.interface.v2",
     "robot_id": "limo",
     "vendor": "AgileX Robotics",
     "ros": {
@@ -45,39 +205,20 @@ LIMO_INTERFACE_CONTRACT: dict[str, Any] = {
         "unknown": 255,
     },
     "interfaces": [
-        {
-            "capability_id": "limo.observe.status",
-            "kind": "observation",
-            "ros_kind": "topic",
-            "ros_name": "/limo_status",
-            "ros_type": "limo_base/LimoStatus",
-            "read_only": True,
-        },
-        {
-            "capability_id": "limo.observe.odom",
-            "kind": "observation",
-            "ros_kind": "topic",
-            "ros_name": "/odom",
-            "ros_type": "nav_msgs/Odometry",
-            "read_only": True,
-        },
-        {
-            "capability_id": "limo.observe.imu",
-            "kind": "observation",
-            "ros_kind": "topic",
-            "ros_name": "/imu",
-            "ros_type": "sensor_msgs/Imu",
-            "read_only": True,
-        },
-        {
-            "capability_id": "limo.observe.scan",
-            "kind": "observation",
-            "ros_kind": "topic",
-            "ros_name": "/scan",
-            "ros_type": "sensor_msgs/LaserScan",
-            "read_only": True,
-            "required": False,
-        },
+        *[
+            {
+                "capability_id": f"limo.observe.{name}",
+                "kind": "observation",
+                "ros_kind": "topic",
+                "ros_name": spec["topic"],
+                "ros_type": spec["message_type"],
+                "category": spec["category"],
+                "read_only": True,
+                "required": bool(spec.get("required", False)),
+                "patrol_required": bool(spec.get("patrol_required", False)),
+            }
+            for name, spec in LIMO_OBSERVATION_SPECS.items()
+        ],
         {
             "capability_id": "limo.navigate_to_pose",
             "kind": "actuation",
@@ -126,6 +267,29 @@ def get_limo_contract() -> dict[str, Any]:
     """Return a caller-owned copy of the canonical LIMO interface contract."""
 
     return copy.deepcopy(LIMO_INTERFACE_CONTRACT)
+
+
+def list_limo_observations(category: str = "all") -> list[dict[str, Any]]:
+    """Return the named topic catalogue used by MCP observation tools."""
+
+    categories = {str(spec["category"]) for spec in LIMO_OBSERVATION_SPECS.values()}
+    if category != "all" and category not in categories:
+        raise ValueError(f"category must be one of {sorted(categories | {'all'})}")
+    return [
+        {"observation": name, **copy.deepcopy(spec)}
+        for name, spec in LIMO_OBSERVATION_SPECS.items()
+        if category == "all" or spec["category"] == category
+    ]
+
+
+def decode_limo_error_code(error_code: Any) -> list[str]:
+    """Decode driver error bits using the pinned limo_driver.cpp implementation."""
+
+    if isinstance(error_code, bool) or not isinstance(error_code, int):
+        raise ValueError("error_code must be an integer")
+    if not 0 <= error_code <= 0xFFFF:
+        raise ValueError("error_code must be within uint16 range")
+    return [name for bit, name in LIMO_ERROR_FLAGS.items() if error_code & bit]
 
 
 def _finite_number(name: str, value: Any) -> float:

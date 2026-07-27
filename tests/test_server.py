@@ -20,15 +20,27 @@ async def test_server_exposes_no_raw_ros_publish_tool() -> None:
     names = {tool.name for tool in tools}
 
     assert names == {
+        "limo_get_base_state",
         "limo_get_contract",
-        "limo_probe_ros",
-        "limo_observe",
-        "limo_validate_navigation_goal",
-        "limo_get_runtime_status",
-        "limo_request_navigation",
         "limo_get_action_status",
+        "limo_get_diagnostics",
         "limo_get_execution_receipt",
+        "limo_get_laser_summary",
+        "limo_get_localization_state",
+        "limo_get_map_summary",
+        "limo_get_navigation_state",
+        "limo_get_patrol_readiness",
+        "limo_get_runtime_status",
+        "limo_get_topic_info",
+        "limo_get_transform_state",
+        "limo_list_observations",
+        "limo_observe",
+        "limo_probe_ros",
+        "limo_request_navigation",
+        "limo_sample_topic",
         "limo_emergency_stop",
+        "limo_validate_navigation_goal",
+        "limo_validate_velocity_command",
     }
     assert not any("publish" in name or "cmd_vel" in name for name in names)
 
@@ -43,6 +55,37 @@ def test_rosbridge_endpoint_defaults_to_loopback_only(monkeypatch: pytest.Monkey
 def test_rosbridge_endpoint_honors_operator_allowlist(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("ROSCLAW_LIMO_ROSBRIDGE_ALLOWLIST", "limo.local")
     assert validate_rosbridge_endpoint("wss://limo.local:9090") == "wss://limo.local:9090"
+
+
+def test_message_sampling_uses_ros_header_rate(monkeypatch: pytest.MonkeyPatch) -> None:
+    class FakeTopicClient:
+        def subscribe_many(
+            self, _topic: str, _message_type: str, *, count: int
+        ) -> list[dict[str, Any]]:
+            assert count == 2
+            return [
+                {
+                    "header": {"stamp": {"secs": 10, "nsecs": 0}},
+                    "error_code": 0,
+                    "motion_mode": 0,
+                },
+                {
+                    "header": {"stamp": {"secs": 10, "nsecs": 200_000_000}},
+                    "error_code": 0,
+                    "motion_mode": 0,
+                },
+            ]
+
+    monkeypatch.setattr(
+        LimoMCPService,
+        "_client",
+        staticmethod(lambda *_args, **_kwargs: FakeTopicClient()),
+    )
+
+    result = LimoMCPService(gateway=object()).sample("status", count=2, transport="roscli")
+
+    assert result["rate_source"] == "ros_header"
+    assert result["estimated_rate_hz"] == pytest.approx(5.0)
 
 
 class FakeGateway:

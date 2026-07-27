@@ -125,7 +125,34 @@ class RosbridgeReadOnlyClient:
             "nodes": list(nodes.get("nodes") or []),
         }
 
-    def subscribe_once(self, topic: str, message_type: str) -> dict[str, Any]:
+    def topic_info(self, topic: str, expected_type: str) -> dict[str, Any]:
+        """Read rosapi type and endpoint metadata for one contract topic."""
+
+        topic_type = self.call_service("/rosapi/topic_type", {"topic": topic})
+        observed_type = str(topic_type.get("type", ""))
+        if observed_type and observed_type != expected_type:
+            raise RuntimeError(
+                f"ROS topic type mismatch for {topic}: expected {expected_type}, got {observed_type}"
+            )
+        publishers = self.call_service("/rosapi/publishers", {"topic": topic})
+        subscribers = self.call_service("/rosapi/subscribers", {"topic": topic})
+        return {
+            "topic": topic,
+            "expected_type": expected_type,
+            "observed_type": observed_type,
+            "publishers": list(publishers.get("publishers") or []),
+            "subscribers": list(subscribers.get("subscribers") or []),
+        }
+
+    def subscribe_many(
+        self,
+        topic: str,
+        message_type: str,
+        *,
+        count: int,
+    ) -> list[dict[str, Any]]:
+        """Collect a bounded number of messages from one contract topic."""
+
         subscription_id = f"limo-mcp-{uuid.uuid4()}"
         subscribe = {
             "op": "subscribe",
@@ -136,16 +163,24 @@ class RosbridgeReadOnlyClient:
             "throttle_rate": 0,
         }
         unsubscribe = {"op": "unsubscribe", "id": subscription_id, "topic": topic}
+        messages: list[dict[str, Any]] = []
         with closing(self._connect()) as connection:
             connection.send(json.dumps(subscribe, separators=(",", ":")))
             try:
-                response = self._receive_until(
-                    connection,
-                    lambda item: item.get("op") == "publish" and item.get("topic") == topic,
-                )
+                for _index in range(count):
+                    response = self._receive_until(
+                        connection,
+                        lambda item: item.get("op") == "publish" and item.get("topic") == topic,
+                    )
+                    message = response.get("msg")
+                    if not isinstance(message, dict):
+                        raise RuntimeError(
+                            "rosbridge topic response did not contain an object message"
+                        )
+                    messages.append(message)
             finally:
                 connection.send(json.dumps(unsubscribe, separators=(",", ":")))
-        message = response.get("msg")
-        if not isinstance(message, dict):
-            raise RuntimeError("rosbridge topic response did not contain an object message")
-        return message
+        return messages
+
+    def subscribe_once(self, topic: str, message_type: str) -> dict[str, Any]:
+        return self.subscribe_many(topic, message_type, count=1)[0]

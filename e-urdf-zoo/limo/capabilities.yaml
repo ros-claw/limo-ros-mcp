@@ -1,4 +1,4 @@
-capability_version: "1.0"
+capability_version: "2.0"
 robot_id: limo
 capabilities:
   - id: limo_observe_status
@@ -55,6 +55,55 @@ capabilities:
       - error_code_zero
       - motion_mode_known
     constraints: {direct_cmd_vel: false, receipt_required: true}
+
+  - id: limo_inspect_ros_graph
+    name: inspect_ros_graph
+    category: diagnostics
+    description: Discover named LIMO topics and inspect their types, publishers, and subscribers.
+    skill_type: observation
+    constraints: {read_only: true, arbitrary_topic_access: false}
+
+  - id: limo_sample_ros_messages
+    name: sample_ros_messages
+    category: diagnostics
+    description: Sample up to ten messages from a named contract topic and estimate its rate.
+    skill_type: observation
+    constraints: {read_only: true, max_samples: 10, large_payloads_summarized: true}
+
+  - id: limo_observe_localization
+    name: observe_localization
+    category: localization
+    description: Read AMCL and fused pose with covariance summaries.
+    skill_type: observation
+    constraints: {read_only: true}
+
+  - id: limo_observe_navigation
+    name: observe_navigation
+    category: navigation
+    description: Read move_base state, current goal, and compact global/local paths.
+    skill_type: observation
+    constraints: {read_only: true}
+
+  - id: limo_observe_map
+    name: observe_map
+    category: mapping
+    description: Read map metadata and compact occupancy summaries.
+    skill_type: observation
+    constraints: {read_only: true, large_payloads_summarized: true}
+
+  - id: limo_observe_diagnostics
+    name: observe_diagnostics
+    category: diagnostics
+    description: Read diagnostic severity counts, component messages, TF edges, and ROS logs.
+    skill_type: observation
+    constraints: {read_only: true}
+
+  - id: limo_patrol_readiness
+    name: patrol_readiness
+    category: inspection
+    description: Aggregate base, lidar, localization, navigation, map, and diagnostics evidence.
+    skill_type: validation
+    constraints: {read_only: true, dispatches_motion: false}
 
 forbidden_capabilities:
   - id: limo_direct_cmd_vel

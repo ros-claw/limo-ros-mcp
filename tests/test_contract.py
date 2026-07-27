@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 from limo_ros_mcp.contract import (
+    LIMO_OBSERVATION_SPECS,
+    decode_limo_error_code,
     get_limo_contract,
+    list_limo_observations,
     validate_navigation_goal,
     validate_velocity_command,
 )
@@ -13,14 +16,19 @@ def test_contract_exposes_only_source_backed_interfaces() -> None:
     contract = get_limo_contract()
     interfaces = {item["ros_name"]: item for item in contract["interfaces"]}
 
-    assert set(interfaces) == {
+    assert {
         "/limo_status",
         "/odom",
         "/imu",
         "/scan",
         "/move_base",
         "/cmd_vel",
-    }
+    }.issubset(interfaces)
+    assert len(LIMO_OBSERVATION_SPECS) >= 20
+    assert all(
+        interfaces[str(spec["topic"])]["read_only"] is True
+        for spec in LIMO_OBSERVATION_SPECS.values()
+    )
     assert interfaces["/limo_status"]["ros_type"] == "limo_base/LimoStatus"
     assert interfaces["/cmd_vel"]["enabled"] is False
     assert contract["geometry"] == {
@@ -86,3 +94,24 @@ def test_contract_records_immutable_upstream_revisions() -> None:
 
     assert len(sources["limo_ros"]["commit"]) == 40
     assert len(sources["limo_doc"]["commit"]) == 40
+
+
+def test_observation_catalog_filters_categories() -> None:
+    navigation = list_limo_observations("navigation")
+
+    assert {item["observation"] for item in navigation} == {
+        "navigation_status",
+        "navigation_feedback",
+        "navigation_result",
+        "current_goal",
+        "global_plan",
+        "local_plan",
+    }
+
+
+def test_limo_error_code_decoder_matches_driver_bits() -> None:
+    assert decode_limo_error_code(0x0002 | 0x0010 | 0x0100) == [
+        "battery_low",
+        "motor_driver_2_error",
+        "drive_status_error",
+    ]
