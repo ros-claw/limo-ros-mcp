@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "limo-ros-mcp"
-version = "0.1.0"
-description = "Safety-bounded MCP server for the AgileX LIMO ROS 1 platform"
+version = "0.2.0"
+description = "Inspection-focused MCP server for the AgileX LIMO ROS 1 platform"
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.11,<3.14"
@@ -84,3 +84,4 @@ ignore_missing_imports = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+markers = ["live_ros: read-only tests against an operator-started LIMO ROS 1 graph"]

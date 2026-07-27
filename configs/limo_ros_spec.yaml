@@ -1,4 +1,4 @@
-schema_version: rosclaw.embodiment_card.v1
+schema_version: rosclaw.embodiment_card.v2
 robot_id: limo
 aliases: [limo, agilex_limo]
 body_type: multi_mode_mobile_base
@@ -39,6 +39,60 @@ preferred_interfaces:
     ros_name: /scan
     ros_type: sensor_msgs/LaserScan
     reason: "Optional read-only lidar scan used by the navigation costmaps."
+
+  - capability_id: limo.observe.localized_pose
+    ros_kind: topic
+    ros_name: /amcl_pose
+    ros_type: geometry_msgs/PoseWithCovarianceStamped
+    reason: "AMCL pose and covariance used to judge localization quality."
+
+  - capability_id: limo.observe.navigation_status
+    ros_kind: topic
+    ros_name: /move_base/status
+    ros_type: actionlib_msgs/GoalStatusArray
+    reason: "Current and terminal move_base goal state."
+
+  - capability_id: limo.observe.current_goal
+    ros_kind: topic
+    ros_name: /move_base/current_goal
+    ros_type: geometry_msgs/PoseStamped
+    reason: "Current navigation target without submitting a new goal."
+
+  - capability_id: limo.observe.global_plan
+    ros_kind: topic
+    ros_name: /move_base/GlobalPlanner/plan
+    ros_type: nav_msgs/Path
+    reason: "Global route geometry for patrol diagnostics."
+
+  - capability_id: limo.observe.local_plan
+    ros_kind: topic
+    ros_name: /move_base/TrajectoryPlannerROS/local_plan
+    ros_type: nav_msgs/Path
+    reason: "Local route geometry for obstacle-avoidance diagnostics."
+
+  - capability_id: limo.observe.map_metadata
+    ros_kind: topic
+    ros_name: /map_metadata
+    ros_type: nav_msgs/MapMetaData
+    reason: "Map size, resolution, and origin for route preparation."
+
+  - capability_id: limo.observe.diagnostics
+    ros_kind: topic
+    ros_name: /diagnostics
+    ros_type: diagnostic_msgs/DiagnosticArray
+    reason: "ROS component health grouped by diagnostic severity."
+
+  - capability_id: limo.observe.tf
+    ros_kind: topic
+    ros_name: /tf
+    ros_type: tf2_msgs/TFMessage
+    reason: "Dynamic transform edges required by localization and navigation."
+
+  - capability_id: limo.observe.camera
+    ros_kind: topic_group
+    ros_names: [/limo/color/image_raw, /limo/depth/image_raw, /limo/depth/points]
+    ros_types: [sensor_msgs/Image, sensor_msgs/Image, sensor_msgs/PointCloud2]
+    reason: "Documented LIMO RGB-D inspection streams; payloads are summarized by default."
 
 discouraged_interfaces:
   - ros_kind: topic

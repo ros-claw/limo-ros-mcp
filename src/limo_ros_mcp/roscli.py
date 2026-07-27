@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import time
 from typing import Any
 
 import yaml
@@ -22,6 +23,7 @@ class RosCliReadOnlyClient:
         self.topic_types = dict(topic_types)
         self.timeout_sec = float(timeout_sec)
         self.max_output_bytes = int(max_output_bytes)
+        self.last_sample_elapsed_sec = 0.0
         rostopic = shutil.which("rostopic")
         rosnode = shutil.which("rosnode")
         if not rostopic or not rosnode:
@@ -57,7 +59,41 @@ class RosCliReadOnlyClient:
             observed_types.append(self._run([self.rostopic, "type", topic]).strip())
         return {"topics": topics, "types": observed_types, "nodes": nodes}
 
-    def subscribe_once(self, topic: str, message_type: str) -> dict[str, Any]:
+    def topic_info(self, topic: str, expected_type: str) -> dict[str, Any]:
+        if self.topic_types.get(topic) != expected_type:
+            raise ValueError("topic is not present in the immutable LIMO observation allowlist")
+        observed_type = self._run([self.rostopic, "type", topic]).strip()
+        if observed_type != expected_type:
+            raise RuntimeError(
+                f"ROS topic type mismatch for {topic}: expected {expected_type}, got {observed_type}"
+            )
+        output = self._run([self.rostopic, "info", topic])
+        publishers: list[str] = []
+        subscribers: list[str] = []
+        target = publishers
+        for line in output.splitlines():
+            stripped = line.strip()
+            if stripped == "Publishers:":
+                target = publishers
+            elif stripped == "Subscribers:":
+                target = subscribers
+            elif stripped.startswith("*"):
+                target.append(stripped[1:].strip())
+        return {
+            "topic": topic,
+            "expected_type": expected_type,
+            "observed_type": observed_type,
+            "publishers": publishers,
+            "subscribers": subscribers,
+        }
+
+    def subscribe_many(
+        self,
+        topic: str,
+        message_type: str,
+        *,
+        count: int,
+    ) -> list[dict[str, Any]]:
         if self.topic_types.get(topic) != message_type:
             raise ValueError("topic is not present in the immutable LIMO observation allowlist")
         observed_type = self._run([self.rostopic, "type", topic]).strip()
@@ -65,10 +101,19 @@ class RosCliReadOnlyClient:
             raise RuntimeError(
                 f"ROS topic type mismatch for {topic}: expected {message_type}, got {observed_type}"
             )
-        output = self._run([self.rostopic, "echo", "-n", "1", topic]).strip()
-        if output.endswith("---"):
-            output = output[:-3].rstrip()
-        message = yaml.safe_load(output)
-        if not isinstance(message, dict):
-            raise RuntimeError("rostopic echo did not return an object message")
-        return message
+        started = time.monotonic()
+        command = [self.rostopic, "echo"]
+        if message_type in {"sensor_msgs/Image", "sensor_msgs/PointCloud2"}:
+            command.append("--noarr")
+        command.extend(["-n", str(count), topic])
+        output = self._run(command).strip()
+        messages = [item for item in yaml.safe_load_all(output) if isinstance(item, dict)]
+        if len(messages) != count:
+            raise RuntimeError(
+                f"rostopic echo returned {len(messages)} object messages, expected {count}"
+            )
+        self.last_sample_elapsed_sec = time.monotonic() - started
+        return messages
+
+    def subscribe_once(self, topic: str, message_type: str) -> dict[str, Any]:
+        return self.subscribe_many(topic, message_type, count=1)[0]

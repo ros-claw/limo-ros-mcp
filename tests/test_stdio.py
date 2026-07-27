@@ -28,7 +28,10 @@ async def test_limo_mcp_stdio_initialize_list_and_call() -> None:
                 await session.initialize()
                 listed = await session.list_tools()
                 names = {tool.name for tool in listed.tools}
+                assert len(names) == 21
                 assert "limo_get_contract" in names
+                assert "limo_sample_topic" in names
+                assert "limo_get_patrol_readiness" in names
                 assert "limo_request_navigation" in names
                 assert not any("publish" in name or "cmd_vel" in name for name in names)
 
@@ -37,3 +40,10 @@ async def test_limo_mcp_stdio_initialize_list_and_call() -> None:
                 payload = json.loads(called.content[0].text)
                 assert payload["contract"]["robot_id"] == "limo"
                 assert payload["command_dispatched"] is False
+
+                observations = await session.call_tool(
+                    "limo_list_observations", {"category": "navigation"}
+                )
+                assert observations.isError is False
+                observation_payload = json.loads(observations.content[0].text)
+                assert observation_payload["count"] == 6
