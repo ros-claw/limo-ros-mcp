@@ -1,0 +1,61 @@
+capability_version: "1.0"
+robot_id: limo
+capabilities:
+  - id: limo_observe_status
+    name: observe_status
+    category: state
+    description: Read vehicle state, control mode, battery voltage, error code, and motion mode.
+    skill_type: observation
+    outputs:
+      - {name: status, type: limo_base/LimoStatus}
+    constraints: {read_only: true, max_age_sec: 1.0}
+
+  - id: limo_observe_odometry
+    name: observe_odometry
+    category: state
+    description: Read ROS odometry feedback from /odom.
+    skill_type: observation
+    outputs:
+      - {name: odometry, type: nav_msgs/Odometry}
+    constraints: {read_only: true, max_age_sec: 1.0}
+
+  - id: limo_observe_imu
+    name: observe_imu
+    category: state
+    description: Read inertial feedback from /imu.
+    skill_type: observation
+    outputs:
+      - {name: imu, type: sensor_msgs/Imu}
+    constraints: {read_only: true, max_age_sec: 1.0}
+
+  - id: limo_observe_scan
+    name: observe_scan
+    category: perception
+    description: Read optional lidar feedback from /scan.
+    skill_type: observation
+    outputs:
+      - {name: laser_scan, type: sensor_msgs/LaserScan}
+    constraints: {read_only: true, optional: true, max_age_sec: 1.0}
+
+  - id: limo_navigate_to_pose
+    name: navigate_to_pose
+    category: navigation
+    description: Submit an obstacle-aware move_base goal through rosclawd.
+    skill_type: guarded
+    inputs:
+      - {name: frame_id, type: str, enum: [map, odom]}
+      - {name: x, type: float, unit: m}
+      - {name: y, type: float, unit: m}
+      - {name: yaw, type: float, unit: rad}
+    preconditions:
+      - localization_ready
+      - costmap_ready
+      - obstacle_check_enabled
+      - limo_status_fresh
+      - error_code_zero
+      - motion_mode_known
+    constraints: {direct_cmd_vel: false, receipt_required: true}
+
+forbidden_capabilities:
+  - id: limo_direct_cmd_vel
+    reason: Direct Agent publishing to /cmd_vel bypasses rosclawd and the navigation safety stack.

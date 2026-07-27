@@ -1,0 +1,77 @@
+"""Wire-level tests for the read-only rosbridge client."""
+
+from __future__ import annotations
+
+import json
+from typing import Any
+
+from limo_ros_mcp.rosbridge import RosbridgeReadOnlyClient
+
+
+class FakeConnection:
+    def __init__(self, responses: list[dict[str, Any]]) -> None:
+        self.responses = [json.dumps(item) for item in responses]
+        self.sent: list[dict[str, Any]] = []
+
+    def send(self, payload: str) -> None:
+        self.sent.append(json.loads(payload))
+
+    def recv(self) -> str:
+        response = json.loads(self.responses.pop(0))
+        if response.get("id") == "REQUEST_ID":
+            response["id"] = self.sent[0]["id"]
+        return json.dumps(response)
+
+    def settimeout(self, timeout: float) -> None:
+        assert timeout > 0
+
+    def close(self) -> None:
+        return None
+
+
+class FakeSocket:
+    def close(self) -> None:
+        return None
+
+
+def test_call_service_has_no_publish_primitive(monkeypatch: Any) -> None:
+    connection = FakeConnection(
+        [
+            {
+                "op": "service_response",
+                "id": "REQUEST_ID",
+                "result": True,
+                "values": {"topics": ["/odom"], "types": ["nav_msgs/Odometry"]},
+            }
+        ]
+    )
+    connect_options: dict[str, Any] = {}
+
+    def connect(*_args: Any, **kwargs: Any) -> FakeConnection:
+        connect_options.update(kwargs)
+        return connection
+
+    monkeypatch.setattr("websocket.create_connection", connect)
+    monkeypatch.setattr("socket.create_connection", lambda *_args, **_kwargs: FakeSocket())
+
+    result = RosbridgeReadOnlyClient("ws://127.0.0.1:9090").call_service("/rosapi/topics")
+
+    assert result["topics"] == ["/odom"]
+    assert [item["op"] for item in connection.sent] == ["call_service"]
+    assert isinstance(connect_options["socket"], FakeSocket)
+
+
+def test_subscribe_once_always_unsubscribes(monkeypatch: Any) -> None:
+    connection = FakeConnection(
+        [{"op": "publish", "topic": "/imu", "msg": {"orientation": {"w": 1.0}}}]
+    )
+    monkeypatch.setattr("websocket.create_connection", lambda *_args, **_kwargs: connection)
+    monkeypatch.setattr("socket.create_connection", lambda *_args, **_kwargs: FakeSocket())
+
+    result = RosbridgeReadOnlyClient("ws://127.0.0.1:9090").subscribe_once(
+        "/imu", "sensor_msgs/Imu"
+    )
+
+    assert result["orientation"]["w"] == 1.0
+    assert [item["op"] for item in connection.sent] == ["subscribe", "unsubscribe"]
+    assert not any(item["op"] in {"advertise", "publish"} for item in connection.sent)

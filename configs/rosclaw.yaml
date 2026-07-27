@@ -1,0 +1,25 @@
+robot_id: limo
+robot_model_path: e-urdf-zoo/limo/robot.eurdf.yaml
+safety_level: HIGH
+enable_firewall: true
+enable_memory: true
+enable_practice: true
+enable_auto: false
+enable_darwin: false
+enable_know: true
+enable_how: true
+enable_swarm: false
+
+ros:
+  version: ros1
+  endpoint: ws://127.0.0.1:9090
+  robot_spec_path: configs/limo_ros_spec.yaml
+
+mcp:
+  command: .venv/bin/python
+  args: [-m, limo_ros_mcp.server]
+  transport: stdio
+
+execution:
+  real_enabled: false
+  note: Enable only after a verified LIMO daemon executor and physical E-stop evidence exist.
