@@ -2,13 +2,20 @@
 
 from __future__ import annotations
 
+import importlib.util
 import json
+import math
 import os
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 WORKER = Path(__file__).parents[1] / "worker" / "limo_initial_pose_worker.py"
+SPEC = importlib.util.spec_from_file_location("limo_initial_pose_worker", WORKER)
+assert SPEC is not None and SPEC.loader is not None
+WORKER_MODULE = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(WORKER_MODULE)
 
 
 def _request() -> dict[str, object]:
@@ -63,3 +70,53 @@ def test_worker_rejects_non_map_pose_and_non_finite_values() -> None:
     payload = _request()
     payload["target_pose"] = {"frame_id": "map", "x": float("nan"), "y": 0.0, "yaw": 0.0}
     assert _validate(payload).returncode == 1
+
+
+def _pose_message(x: float, y: float, yaw: float) -> SimpleNamespace:
+    return SimpleNamespace(
+        header=SimpleNamespace(frame_id="map"),
+        pose=SimpleNamespace(
+            pose=SimpleNamespace(
+                position=SimpleNamespace(x=x, y=y),
+                orientation=SimpleNamespace(
+                    x=0.0,
+                    y=0.0,
+                    z=math.sin(yaw / 2.0),
+                    w=math.cos(yaw / 2.0),
+                ),
+            )
+        ),
+    )
+
+
+def test_worker_waits_past_first_amcl_sample_until_converged() -> None:
+    class FakeRospy:
+        def __init__(self) -> None:
+            self.messages = iter(
+                [
+                    _pose_message(5.8, 0.45, 0.28),
+                    _pose_message(0.73, -1.24, 0.36),
+                ]
+            )
+            self.calls = 0
+
+        @staticmethod
+        def is_shutdown() -> bool:
+            return False
+
+        def wait_for_message(self, _topic: str, _message_type: object, *, timeout: float):
+            assert timeout > 0.0
+            self.calls += 1
+            return next(self.messages)
+
+    rospy = FakeRospy()
+    _message, observed = WORKER_MODULE._wait_for_converged_pose(
+        rospy,
+        object,
+        {"frame_id": "map", "x": 0.75, "y": -1.25, "yaw": 0.35},
+        2.0,
+    )
+
+    assert rospy.calls == 2
+    assert observed["x"] == 0.73
+    assert WORKER_MODULE._pose_converged(observed, {"x": 0.75, "y": -1.25, "yaw": 0.35})
