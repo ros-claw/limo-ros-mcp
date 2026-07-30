@@ -20,7 +20,7 @@ chosen by the Agent.
 A successful worker result requires all of the following after dispatch:
 
 - AMCL was subscribed to `/initialpose`;
-- a new `/amcl_pose` message was observed;
+- a `/amcl_pose` sample converged near the requested estimate within the bounded timeout;
 - the `map -> odom` transform was available;
 - the worker response matched the requested action and protocol.
 

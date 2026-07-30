@@ -111,6 +111,35 @@ def _yaw_from_quaternion(q):
     return math.atan2(2.0 * (q.w * q.z + q.x * q.y), 1.0 - 2.0 * (q.y * q.y + q.z * q.z))
 
 
+def _pose_from_message(message):
+    return {
+        "frame_id": message.header.frame_id,
+        "x": message.pose.pose.position.x,
+        "y": message.pose.pose.position.y,
+        "yaw": _yaw_from_quaternion(message.pose.pose.orientation),
+    }
+
+
+def _pose_converged(observed, target):
+    position_error = math.hypot(observed["x"] - target["x"], observed["y"] - target["y"])
+    yaw_delta = observed["yaw"] - target["yaw"]
+    yaw_error = abs(math.atan2(math.sin(yaw_delta), math.cos(yaw_delta)))
+    return observed["frame_id"] == "map" and position_error <= 1.0 and yaw_error <= 1.0
+
+
+def _wait_for_converged_pose(rospy, message_type, target, timeout_sec):
+    deadline = time.time() + timeout_sec
+    while not rospy.is_shutdown():
+        remaining = deadline - time.time()
+        if remaining <= 0.0:
+            break
+        candidate = rospy.wait_for_message("/amcl_pose", message_type, timeout=remaining)
+        observed = _pose_from_message(candidate)
+        if _pose_converged(observed, target):
+            return candidate, observed
+    raise RequestError("AMCL did not converge near the requested estimate before timeout")
+
+
 def _run_ros(request):
     import rospy
     import tf
@@ -139,19 +168,16 @@ def _run_ros(request):
 
     dispatched_wall = time.time()
     publisher.publish(message)
-    observed = rospy.wait_for_message(
-        "/amcl_pose", PoseWithCovarianceStamped, timeout=request["verification_timeout_sec"]
+    observed, observed_pose = _wait_for_converged_pose(
+        rospy,
+        PoseWithCovarianceStamped,
+        pose,
+        request["verification_timeout_sec"],
     )
     listener = tf.TransformListener()
     remaining = max(0.1, request["verification_timeout_sec"] - (time.time() - dispatched_wall))
     listener.waitForTransform("map", "odom", rospy.Time(0), rospy.Duration(remaining))
     translation, rotation = listener.lookupTransform("map", "odom", rospy.Time(0))
-    observed_pose = {
-        "frame_id": observed.header.frame_id,
-        "x": observed.pose.pose.position.x,
-        "y": observed.pose.pose.position.y,
-        "yaw": _yaw_from_quaternion(observed.pose.pose.orientation),
-    }
     return {
         "protocol": PROTOCOL,
         "ok": True,
