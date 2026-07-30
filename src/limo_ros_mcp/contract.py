@@ -245,14 +245,18 @@ LIMO_INTERFACE_CONTRACT: dict[str, Any] = {
         "max_lateral_velocity_mps": 0.1,
         "max_angular_velocity_radps": 0.5,
         "max_velocity_command_duration_sec": 1.0,
-        "navigation_preconditions": [
+        "readiness_evidence_schema": "limo.readiness.v1",
+        "readiness_policy": "configs/limo_readiness_policy.yaml",
+        "legacy_shadow_preconditions": [
             "localization_ready",
             "costmap_ready",
             "obstacle_check_enabled",
-            "limo_status_fresh",
-            "error_code == 0",
-            "motion_mode_known",
         ],
+        "legacy_booleans_usable_for_real": False,
+        "real_navigation_enabled": False,
+        "real_navigation_blocker": (
+            "Navigation Contract v2 and daemon-owned trusted preflight are not implemented."
+        ),
     },
     "evidence_boundary": {
         "static_contract_is_hardware_evidence": False,

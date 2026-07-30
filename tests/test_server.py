@@ -57,6 +57,18 @@ def test_rosbridge_endpoint_honors_operator_allowlist(monkeypatch: pytest.Monkey
     assert validate_rosbridge_endpoint("wss://limo.local:9090") == "wss://limo.local:9090"
 
 
+@pytest.mark.parametrize(
+    "observation", ["color_image", "depth_points", "map", "global_costmap", "local_costmap"]
+)
+def test_large_binary_raw_observations_are_denied(observation: str) -> None:
+    service = LimoMCPService(gateway=object())
+
+    with pytest.raises(ValueError, match="include_raw is denied"):
+        service.observe(observation, include_raw=True)
+    with pytest.raises(ValueError, match="include_raw is denied"):
+        service.sample(observation, include_raw=True)
+
+
 def test_message_sampling_uses_ros_header_rate(monkeypatch: pytest.MonkeyPatch) -> None:
     class FakeTopicClient:
         def subscribe_many(
@@ -149,3 +161,26 @@ async def test_request_navigation_submits_shadow_to_rosclawd_boundary() -> None:
     assert call["execution_mode"] == "SHADOW"
     assert call["body_id"] == "limo"
     assert call["arguments"]["target_pose"]["yaw"] == 0.25
+    assert result["deprecation_warnings"]
+
+
+@pytest.mark.asyncio
+async def test_legacy_readiness_booleans_can_never_authorize_real() -> None:
+    gateway = FakeGateway()
+    service = LimoMCPService(gateway=gateway)
+
+    result = await service.request_navigation(
+        x=1.0,
+        y=0.0,
+        yaw=0.0,
+        frame_id="map",
+        localization_ready=True,
+        costmap_ready=True,
+        obstacle_check_enabled=True,
+        body_snapshot_hash="sha256:test-body-snapshot",
+        execution_mode="REAL",
+    )
+
+    assert result["error_code"] == "LIMO_LEGACY_READINESS_BOOLEAN_FORBIDDEN"
+    assert result["command_dispatched"] is False
+    assert gateway.calls == []

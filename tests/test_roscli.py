@@ -66,3 +66,13 @@ def test_roscli_topic_info_parses_publishers_and_subscribers(monkeypatch: Any) -
 
     assert info["publishers"] == ["/ydlidar_node (http://robot:1/)"]
     assert info["subscribers"] == ["/move_base (http://robot:2/)"]
+
+
+def test_each_roscli_client_has_a_distinct_transport_generation(monkeypatch: Any) -> None:
+    monkeypatch.setattr("shutil.which", lambda name: f"/opt/ros/melodic/bin/{name}")
+
+    first = RosCliReadOnlyClient({"/scan": "sensor_msgs/LaserScan"})
+    second = RosCliReadOnlyClient({"/scan": "sensor_msgs/LaserScan"})
+
+    assert first.transport_generation.startswith("roscli-")
+    assert first.transport_generation != second.transport_generation

@@ -5,6 +5,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 import time
+import uuid
 from typing import Any
 
 import yaml
@@ -24,6 +25,7 @@ class RosCliReadOnlyClient:
         self.timeout_sec = float(timeout_sec)
         self.max_output_bytes = int(max_output_bytes)
         self.last_sample_elapsed_sec = 0.0
+        self.transport_generation = f"roscli-{uuid.uuid4()}"
         rostopic = shutil.which("rostopic")
         rosnode = shutil.which("rosnode")
         if not rostopic or not rosnode:
@@ -103,7 +105,11 @@ class RosCliReadOnlyClient:
             )
         started = time.monotonic()
         command = [self.rostopic, "echo"]
-        if message_type in {"sensor_msgs/Image", "sensor_msgs/PointCloud2"}:
+        if message_type in {
+            "sensor_msgs/Image",
+            "sensor_msgs/PointCloud2",
+            "nav_msgs/OccupancyGrid",
+        }:
             command.append("--noarr")
         command.extend(["-n", str(count), topic])
         output = self._run(command).strip()

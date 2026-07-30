@@ -10,6 +10,7 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
+from limo_ros_mcp.clocks import ClockJumpTracker
 from limo_ros_mcp.contract import (
     LIMO_OBSERVATION_TOPICS,
     REQUIRED_LIMO_TOPICS,
@@ -18,7 +19,8 @@ from limo_ros_mcp.contract import (
     validate_navigation_goal,
     validate_velocity_command,
 )
-from limo_ros_mcp.messages import evaluate_patrol_readiness, summarize_observation
+from limo_ros_mcp.messages import summarize_observation
+from limo_ros_mcp.readiness import build_readiness_evidence
 from limo_ros_mcp.rosbridge import RosbridgeReadOnlyClient, validate_rosbridge_endpoint
 from limo_ros_mcp.rosclaw_gateway import RosclawGateway
 from limo_ros_mcp.roscli import RosCliReadOnlyClient
@@ -41,6 +43,7 @@ class LimoMCPService:
 
     def __init__(self, gateway: RosclawGateway | Any | None = None) -> None:
         self._gateway = gateway or RosclawGateway()
+        self._clock_tracker = ClockJumpTracker()
 
     def get_contract(self) -> dict[str, Any]:
         return {
@@ -165,6 +168,15 @@ class LimoMCPService:
     ) -> dict[str, Any]:
         if observation not in LIMO_OBSERVATION_TOPICS:
             raise ValueError(f"observation must be one of {sorted(LIMO_OBSERVATION_TOPICS)}")
+        if include_raw and observation in {
+            "color_image",
+            "depth_image",
+            "depth_points",
+            "map",
+            "global_costmap",
+            "local_costmap",
+        }:
+            raise ValueError("include_raw is denied for binary and occupancy-grid observations")
         timeout_sec = self._validate_timeout(timeout_sec)
         self._validate_transport(transport)
         topic, message_type = LIMO_OBSERVATION_TOPICS[observation]
@@ -173,6 +185,8 @@ class LimoMCPService:
             try:
                 client = self._client(candidate, endpoint, timeout_sec)
                 message = client.subscribe_once(topic, message_type)
+                received_wall_time = time.time()
+                received_monotonic = time.monotonic()
             except Exception as exc:  # noqa: BLE001 - try the next read-only transport
                 errors[candidate] = str(exc)
                 continue
@@ -183,6 +197,9 @@ class LimoMCPService:
                 "message_type": message_type,
                 "summary": summarize_observation(observation, message),
                 "transport": candidate,
+                "transport_generation": getattr(client, "transport_generation", None),
+                "received_wall_time": received_wall_time,
+                "received_monotonic": received_monotonic,
                 "trust_level": "LIVE_ROS_TOPIC_OBSERVATION",
                 "command_dispatched": False,
                 "usable_for_real_execution": False,
@@ -252,6 +269,15 @@ class LimoMCPService:
     ) -> dict[str, Any]:
         if observation not in LIMO_OBSERVATION_TOPICS:
             raise ValueError(f"observation must be one of {sorted(LIMO_OBSERVATION_TOPICS)}")
+        if include_raw and observation in {
+            "color_image",
+            "depth_image",
+            "depth_points",
+            "map",
+            "global_costmap",
+            "local_costmap",
+        }:
+            raise ValueError("include_raw is denied for binary and occupancy-grid observations")
         if isinstance(count, bool) or not isinstance(count, int) or not 1 <= count <= 10:
             raise ValueError("count must be an integer within [1, 10]")
         timeout_sec = self._validate_timeout(timeout_sec)
@@ -296,6 +322,7 @@ class LimoMCPService:
                 "topic": topic,
                 "message_type": message_type,
                 "transport": candidate,
+                "transport_generation": getattr(client, "transport_generation", None),
                 "sample_count": len(messages),
                 "elapsed_sec": elapsed,
                 "estimated_rate_hz": estimated_rate_hz,
@@ -329,6 +356,7 @@ class LimoMCPService:
         timeout_sec = self._validate_timeout(timeout_sec)
         self._validate_transport(transport)
         summaries: dict[str, dict[str, Any]] = {}
+        records: dict[str, dict[str, Any]] = {}
         failures: dict[str, dict[str, Any]] = {}
         with ThreadPoolExecutor(max_workers=min(6, len(observations))) as executor:
             future_names = {
@@ -347,12 +375,20 @@ class LimoMCPService:
                 result = future.result()
                 if result.get("ok") and isinstance(result.get("summary"), dict):
                     summaries[observation] = result["summary"]
+                    records[observation] = {
+                        "summary": result["summary"],
+                        "received_wall_time": result.get("received_wall_time"),
+                        "received_monotonic": result.get("received_monotonic"),
+                        "transport": result.get("transport"),
+                        "transport_generation": result.get("transport_generation"),
+                    }
                 else:
                     failures[observation] = result
         return {
             "ok": not failures,
             "requested_observations": observations,
             "summaries": summaries,
+            "observation_records": records,
             "failures": failures,
             "available_count": len(summaries),
             "missing_count": len(failures),
@@ -459,6 +495,8 @@ class LimoMCPService:
         endpoint: str = "ws://127.0.0.1:9090",
         timeout_sec: float = 2.0,
         transport: str = "auto",
+        body_id: str = "limo",
+        body_snapshot_hash: str = "",
     ) -> dict[str, Any]:
         snapshot = self._collect_summaries(
             [
@@ -469,13 +507,30 @@ class LimoMCPService:
                 "localized_pose",
                 "navigation_status",
                 "map_metadata",
+                "global_costmap",
+                "local_costmap",
                 "diagnostics",
+                "tf",
+                "tf_static",
             ],
             endpoint=endpoint,
             timeout_sec=timeout_sec,
             transport=transport,
         )
-        readiness = evaluate_patrol_readiness(snapshot["summaries"])
+        snapshot_wall = time.time()
+        snapshot_monotonic = time.monotonic()
+        clock_jump_detected = self._clock_tracker.observe(
+            wall_time=snapshot_wall, monotonic_time=snapshot_monotonic
+        )
+        readiness = build_readiness_evidence(
+            snapshot["observation_records"],
+            failures=snapshot["failures"],
+            body_id=body_id,
+            body_snapshot_hash=body_snapshot_hash,
+            now_wall=snapshot_wall,
+            now_monotonic=snapshot_monotonic,
+            clock_jump_detected=clock_jump_detected,
+        )
         return {**snapshot, "readiness": readiness, "ok": readiness["ready"]}
 
     def validate_goal(self, **kwargs: Any) -> dict[str, Any]:
@@ -545,6 +600,18 @@ class LimoMCPService:
                 "command_dispatched": False,
                 "usable_for_real_execution": False,
             }
+        if mode == "REAL":
+            return {
+                "ok": False,
+                "decision": "BLOCK",
+                "error_code": "LIMO_LEGACY_READINESS_BOOLEAN_FORBIDDEN",
+                "message": (
+                    "REAL navigation cannot rely on caller-supplied readiness booleans; "
+                    "Navigation Contract v2 and daemon-owned preflight are required."
+                ),
+                "command_dispatched": False,
+                "usable_for_real_execution": False,
+            }
         if not str(body_snapshot_hash).strip():
             return {
                 "ok": False,
@@ -559,7 +626,7 @@ class LimoMCPService:
 
         goal = validation["normalized_goal"]
         try:
-            return await self._gateway.request_navigation(
+            response = await self._gateway.request_navigation(
                 capability_id="limo.navigate_to_pose",
                 arguments={
                     "target_pose": goal,
@@ -579,6 +646,13 @@ class LimoMCPService:
                 timeout_sec=30.0,
                 wait_timeout_sec=float(wait_timeout_sec),
             )
+            return {
+                **response,
+                "deprecation_warnings": [
+                    "Caller-supplied readiness booleans are advisory for SHADOW only and will "
+                    "be removed by Navigation Contract v2."
+                ],
+            }
         except Exception as exc:  # noqa: BLE001 - MCP boundary returns structured errors
             return _control_error("request_navigation", exc)
 
@@ -790,9 +864,16 @@ def build_mcp_server(service: LimoMCPService | None = None) -> FastMCP:
         endpoint: str = "ws://127.0.0.1:9090",
         timeout_sec: float = 2.0,
         transport: str = "auto",
+        body_id: str = "limo",
+        body_snapshot_hash: str = "",
     ) -> dict[str, Any]:
         return await asyncio.to_thread(
-            implementation.patrol_readiness, endpoint, timeout_sec, transport
+            implementation.patrol_readiness,
+            endpoint,
+            timeout_sec,
+            transport,
+            body_id,
+            body_snapshot_hash,
         )
 
     @mcp.tool(description="Validate a LIMO move_base goal without dispatching it.")

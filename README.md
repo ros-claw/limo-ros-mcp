@@ -18,6 +18,8 @@ The current real-robot interface verification and patrol preflight findings are 
 - No MCP tool can advertise or publish a ROS topic. `/cmd_vel`, serial, CAN, and vendor SDK access are absent from the Agent process.
 - Navigation uses the high-level `/move_base` contract and is submitted through `rosclawd` only.
 - REAL execution requires a body snapshot, daemon-issued authorization, a registered verified executor, and a canonical execution receipt.
+- `limo_get_patrol_readiness` returns hash-sealed `limo.readiness.v1` evidence with a five-second default expiry, operator-policy hash, observation receive times, stable checks, blockers, and warnings.
+- The v0.3 legacy readiness booleans are deprecated and can be used for SHADOW compatibility only. REAL requests fail closed until Navigation Contract v2 and daemon-owned preflight exist.
 
 ## MCP tools
 
@@ -76,7 +78,9 @@ roslaunch limo_bringup limo_start.launch pub_odom_tf:=false
 roslaunch rosbridge_server rosbridge_websocket.launch port:=9090
 ```
 
-Then call `limo_probe_ros`, inspect important endpoints with `limo_get_topic_info`, and sample status/navigation messages with `limo_sample_topic`. `limo_get_patrol_readiness` concurrently checks base state, lidar, AMCL, move_base, map metadata, and diagnostics while preserving partial failures. These are observations only and do not prove motion.
+Then call `limo_probe_ros`, inspect important endpoints with `limo_get_topic_info`, and sample status/navigation messages with `limo_sample_topic`. `limo_get_patrol_readiness` concurrently checks base state, lidar, AMCL, move_base, map metadata, global/local costmaps, diagnostics, and the map→odom→base TF chain while preserving partial failures. Thresholds come from the operator-owned [`configs/limo_readiness_policy.yaml`](configs/limo_readiness_policy.yaml). The snapshot is advisory evidence only: its hash is not authorization and the daemon must re-run trusted preflight before future REAL dispatch.
+
+See [`docs/READINESS_EVIDENCE_V1.md`](docs/READINESS_EVIDENCE_V1.md) for the evidence contract, clock rules, and fail-closed semantics.
 
 Use SHADOW before considering REAL. Do not submit REAL unless `limo_get_runtime_status` proves the daemon boundary is ready and an operator has authorized the exact action. Verify the outcome through `limo_get_action_status` and `limo_get_execution_receipt`.
 
