@@ -829,6 +829,7 @@ class LimoMCPService:
         principal_id: str = "",
         approval_id: str | None = None,
         action_id: str | None = None,
+        deadline_at: str | None = None,
         wait_timeout_sec: float = 2.0,
     ) -> dict[str, Any]:
         mode = str(execution_mode).upper()
@@ -876,6 +877,7 @@ class LimoMCPService:
                 approval_id=approval_id,
                 body_id="limo",
                 action_id=action_id,
+                deadline_at=deadline_at,
                 required_evidence="TASK_VERIFIED",
                 timeout_sec=15.0,
                 wait_timeout_sec=float(wait_timeout_sec),
@@ -1205,6 +1207,7 @@ def build_mcp_server(service: LimoMCPService | None = None) -> FastMCP:
         principal_id: str = "",
         approval_id: str | None = None,
         action_id: str | None = None,
+        deadline_at: str | None = None,
         wait_timeout_sec: float = 2.0,
     ) -> dict[str, Any]:
         return await implementation.request_initial_pose(
@@ -1218,6 +1221,7 @@ def build_mcp_server(service: LimoMCPService | None = None) -> FastMCP:
             principal_id=principal_id,
             approval_id=approval_id,
             action_id=action_id,
+            deadline_at=deadline_at,
             wait_timeout_sec=wait_timeout_sec,
         )
 
