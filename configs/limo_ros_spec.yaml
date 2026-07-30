@@ -108,12 +108,14 @@ safety_defaults:
 
 preconditions:
   limo.navigate_to_pose:
-    - localization_ready
-    - costmap_ready
-    - obstacle_check_enabled
-    - limo_status_fresh
-    - error_code == 0
-    - motion_mode in [0, 1, 2]
+    - same_process_readiness_snapshot_ready
+    - readiness_snapshot_unexpired
+    - body_snapshot_hash_matches_readiness
+    - operator_route_policy_matches
+    - map_artifact_hashes_match
+    - goal_inside_geofence
+    - goal_clear_in_occupancy_grid
+    - daemon_owned_preflight_for_real
 
 recovery_capabilities:
   - safety.emergency_stop

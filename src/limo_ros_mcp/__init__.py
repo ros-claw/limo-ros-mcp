@@ -7,9 +7,9 @@ from limo_ros_mcp.contract import (
     decode_limo_error_code,
     get_limo_contract,
     list_limo_observations,
-    validate_navigation_goal,
     validate_velocity_command,
 )
+from limo_ros_mcp.navigation import NavigationGoalValidator, load_patrol_map_policy
 
 __all__ = [
     "LIMO_INTERFACE_CONTRACT",
@@ -18,6 +18,7 @@ __all__ = [
     "decode_limo_error_code",
     "get_limo_contract",
     "list_limo_observations",
-    "validate_navigation_goal",
+    "NavigationGoalValidator",
+    "load_patrol_map_policy",
     "validate_velocity_command",
 ]

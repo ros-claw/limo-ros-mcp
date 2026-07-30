@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 import pytest
 
+from limo_ros_mcp.evidence import seal_snapshot
 from limo_ros_mcp.rosbridge import validate_rosbridge_endpoint
 from limo_ros_mcp.server import (
     LimoMCPService,
@@ -43,6 +45,15 @@ async def test_server_exposes_no_raw_ros_publish_tool() -> None:
         "limo_validate_velocity_command",
     }
     assert not any("publish" in name or "cmd_vel" in name for name in names)
+    schemas = {tool.name: tool.inputSchema for tool in tools}
+    navigation_properties = schemas["limo_request_navigation"]["properties"]
+    assert "readiness_snapshot_hash" in schemas["limo_request_navigation"]["required"]
+    assert "body_snapshot_hash" in schemas["limo_request_navigation"]["required"]
+    assert {
+        "localization_ready",
+        "costmap_ready",
+        "obstacle_check_enabled",
+    }.isdisjoint(navigation_properties)
 
 
 def test_rosbridge_endpoint_defaults_to_loopback_only(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -173,20 +184,64 @@ class FakeGateway:
         }
 
 
+class FakeGoalValidator:
+    def validate(self, **kwargs: Any) -> dict[str, Any]:
+        return {
+            "ok": True,
+            "decision": "ALLOW",
+            "schema_version": "limo.navigation.v2",
+            "normalized_goal": {
+                "frame_id": kwargs["frame_id"],
+                "x": float(kwargs["x"]),
+                "y": float(kwargs["y"]),
+                "yaw": float(kwargs["yaw"]),
+            },
+            "goal_tolerance": {"xy_m": 0.15, "yaw_rad": 0.2},
+            "route_policy_id": "lab-default",
+            "route_policy_hash": "sha256:test-route-policy",
+            "map_id": "test-map",
+            "map_image_hash": "sha256:test-map",
+            "command_dispatched": False,
+            "usable_for_real_execution": False,
+        }
+
+
+def _service_with_readiness(
+    gateway: FakeGateway,
+    *,
+    state: str = "READY",
+    body_hash: str = "sha256:test-body-snapshot",
+    expires_in: float = 60.0,
+) -> tuple[LimoMCPService, str]:
+    service = LimoMCPService(gateway=gateway, goal_validator=FakeGoalValidator())
+    readiness = seal_snapshot(
+        {
+            "schema_version": "limo.readiness.v1",
+            "state": state,
+            "ready": state == "READY",
+            "body_snapshot_hash": body_hash,
+            "expires_wall_time": time.time() + expires_in,
+            "expires_at": "test",
+            "command_dispatched": False,
+            "usable_for_real_execution": False,
+        }
+    )
+    service._remember_readiness(readiness)
+    return service, str(readiness["snapshot_hash"])
+
+
 @pytest.mark.asyncio
 async def test_request_navigation_blocks_before_daemon_without_snapshot() -> None:
     gateway = FakeGateway()
-    service = LimoMCPService(gateway=gateway)
+    service = LimoMCPService(gateway=gateway, goal_validator=FakeGoalValidator())
 
     result = await service.request_navigation(
         x=1.0,
         y=0.0,
         yaw=0.0,
         frame_id="map",
-        localization_ready=True,
-        costmap_ready=True,
-        obstacle_check_enabled=True,
         body_snapshot_hash="",
+        readiness_snapshot_hash="sha256:unknown",
     )
 
     assert result["error_code"] == "BODY_SNAPSHOT_REQUIRED"
@@ -197,17 +252,15 @@ async def test_request_navigation_blocks_before_daemon_without_snapshot() -> Non
 @pytest.mark.asyncio
 async def test_request_navigation_submits_shadow_to_rosclawd_boundary() -> None:
     gateway = FakeGateway()
-    service = LimoMCPService(gateway=gateway)
+    service, readiness_hash = _service_with_readiness(gateway)
 
     result = await service.request_navigation(
         x=1.0,
         y=0.0,
         yaw=0.25,
         frame_id="map",
-        localization_ready=True,
-        costmap_ready=True,
-        obstacle_check_enabled=True,
         body_snapshot_hash="sha256:test-body-snapshot",
+        readiness_snapshot_hash=readiness_hash,
         execution_mode="SHADOW",
         action_id="action-limo-shadow",
         wait_timeout_sec=0.0,
@@ -220,26 +273,102 @@ async def test_request_navigation_submits_shadow_to_rosclawd_boundary() -> None:
     assert call["execution_mode"] == "SHADOW"
     assert call["body_id"] == "limo"
     assert call["arguments"]["target_pose"]["yaw"] == 0.25
-    assert result["deprecation_warnings"]
+    assert call["arguments"]["schema_version"] == "limo.navigation.v2"
+    assert call["arguments"]["readiness_snapshot_hash"] == readiness_hash
+    assert call["arguments"]["expected_effect"]["stop_required"] is True
+    assert "preconditions" not in call["arguments"]
+    assert result["navigation_contract"]["decision"] == "ALLOW"
 
 
 @pytest.mark.asyncio
-async def test_legacy_readiness_booleans_can_never_authorize_real() -> None:
+async def test_real_navigation_requires_daemon_owned_preflight() -> None:
     gateway = FakeGateway()
-    service = LimoMCPService(gateway=gateway)
+    service, readiness_hash = _service_with_readiness(gateway)
 
     result = await service.request_navigation(
         x=1.0,
         y=0.0,
         yaw=0.0,
         frame_id="map",
-        localization_ready=True,
-        costmap_ready=True,
-        obstacle_check_enabled=True,
         body_snapshot_hash="sha256:test-body-snapshot",
+        readiness_snapshot_hash=readiness_hash,
         execution_mode="REAL",
     )
 
-    assert result["error_code"] == "LIMO_LEGACY_READINESS_BOOLEAN_FORBIDDEN"
+    assert result["error_code"] == "LIMO_DAEMON_PREFLIGHT_REQUIRED"
     assert result["command_dispatched"] is False
+    assert gateway.calls == []
+
+
+@pytest.mark.asyncio
+async def test_request_navigation_rejects_unknown_readiness_snapshot() -> None:
+    gateway = FakeGateway()
+    service = LimoMCPService(gateway=gateway, goal_validator=FakeGoalValidator())
+
+    result = await service.request_navigation(
+        x=1.0,
+        y=0.0,
+        yaw=0.0,
+        frame_id="map",
+        body_snapshot_hash="sha256:test-body-snapshot",
+        readiness_snapshot_hash="sha256:not-generated-here",
+    )
+
+    assert result["error_code"] == "LIMO_READINESS_SNAPSHOT_UNKNOWN"
+    assert gateway.calls == []
+
+
+@pytest.mark.asyncio
+async def test_request_navigation_rejects_body_binding_and_blocked_readiness() -> None:
+    gateway = FakeGateway()
+    service, readiness_hash = _service_with_readiness(gateway)
+    mismatch = await service.request_navigation(
+        x=1.0,
+        y=0.0,
+        yaw=0.0,
+        frame_id="map",
+        body_snapshot_hash="sha256:different-body",
+        readiness_snapshot_hash=readiness_hash,
+    )
+    blocked_service, blocked_hash = _service_with_readiness(gateway, state="BLOCKED")
+    blocked = await blocked_service.request_navigation(
+        x=1.0,
+        y=0.0,
+        yaw=0.0,
+        frame_id="map",
+        body_snapshot_hash="sha256:test-body-snapshot",
+        readiness_snapshot_hash=blocked_hash,
+    )
+
+    assert mismatch["error_code"] == "LIMO_BODY_SNAPSHOT_MISMATCH"
+    assert blocked["error_code"] == "LIMO_READINESS_NOT_READY"
+    assert gateway.calls == []
+
+
+@pytest.mark.asyncio
+async def test_request_navigation_rejects_expired_and_tampered_readiness() -> None:
+    gateway = FakeGateway()
+    expired_service, expired_hash = _service_with_readiness(gateway, expires_in=-1.0)
+    expired = await expired_service.request_navigation(
+        x=1.0,
+        y=0.0,
+        yaw=0.0,
+        frame_id="map",
+        body_snapshot_hash="sha256:test-body-snapshot",
+        readiness_snapshot_hash=expired_hash,
+    )
+
+    tampered_service, tampered_hash = _service_with_readiness(gateway)
+    tampered_service._readiness_snapshots[tampered_hash]["state"] = "BLOCKED"
+    tampered = await tampered_service.request_navigation(
+        x=1.0,
+        y=0.0,
+        yaw=0.0,
+        frame_id="map",
+        body_snapshot_hash="sha256:test-body-snapshot",
+        readiness_snapshot_hash=tampered_hash,
+    )
+
+    assert expired["error_code"] == "LIMO_SNAPSHOT_EXPIRED"
+    assert tampered["error_code"] == "LIMO_SNAPSHOT_HASH_MISMATCH"
     assert gateway.calls == []
