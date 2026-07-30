@@ -265,12 +265,14 @@ async def test_request_initial_pose_submits_exact_daemon_contract() -> None:
         body_snapshot_hash="sha256:test-body-snapshot",
         execution_mode="REAL",
         action_id="action-limo-initial-pose",
+        deadline_at="2030-01-02T03:04:05Z",
         wait_timeout_sec=0.0,
     )
     assert result["state"] == "QUEUED"
     call = gateway.calls[0]
     assert call["capability_id"] == "limo.set_initial_pose"
     assert call["execution_mode"] == "REAL"
+    assert call["deadline_at"] == "2030-01-02T03:04:05Z"
     assert call["arguments"]["schema_version"] == "limo.initial-pose.v1"
     assert call["arguments"]["target_pose"]["frame_id"] == "map"
     assert call["arguments"]["covariance_diagonal"] == [
