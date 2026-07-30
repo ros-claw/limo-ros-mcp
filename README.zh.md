@@ -1,6 +1,6 @@
 # limo-ros-mcp
 
-AgileX LIMO ROS 1 的独立巡检 MCP 服务。它把 `limo_ros` 的底盘、激光、定位、导航、地图、诊断、TF 和 RGB-D 接口转换成 21 个 Codex 可调用工具，并把会改变机器人状态的请求交给 ROSClaw 守护进程。
+AgileX LIMO ROS 1 的独立巡检 MCP 服务。它把 `limo_ros` 的底盘、激光、定位、导航、地图、诊断、TF 和 RGB-D 接口转换成 22 个 Codex 可调用工具，并把会改变机器人状态的请求交给 ROSClaw 守护进程。
 
 本次真机接口验证、动态状态和巡检前置问题记录在
 [`docs/ROS_INSPECTION_READINESS.md`](docs/ROS_INSPECTION_READINESS.md)。
@@ -27,7 +27,7 @@ AgileX LIMO ROS 1 的独立巡检 MCP 服务。它把 `limo_ros` 的底盘、激
 | 消息检查 | `limo_observe`、`limo_sample_topic` |
 | 巡检快照 | `limo_get_base_state`、`limo_get_laser_summary`、`limo_get_localization_state`、`limo_get_navigation_state`、`limo_get_map_summary`、`limo_get_diagnostics`、`limo_get_transform_state`、`limo_get_patrol_readiness` |
 | 参数验证 | `limo_validate_navigation_goal`、`limo_validate_velocity_command` |
-| ROSClaw 控制面 | `limo_get_runtime_status`、`limo_request_navigation`、`limo_get_action_status`、`limo_get_execution_receipt`、`limo_emergency_stop` |
+| ROSClaw 控制面 | `limo_get_runtime_status`、`limo_request_navigation`、`limo_request_initial_pose`、`limo_get_action_status`、`limo_get_execution_receipt`、`limo_emergency_stop` |
 
 ## 安装与 Codex 接入
 

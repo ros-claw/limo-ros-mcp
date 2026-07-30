@@ -39,6 +39,7 @@ async def test_server_exposes_no_raw_ros_publish_tool() -> None:
         "limo_observe",
         "limo_probe_ros",
         "limo_request_navigation",
+        "limo_request_initial_pose",
         "limo_sample_topic",
         "limo_emergency_stop",
         "limo_validate_navigation_goal",
@@ -183,6 +184,9 @@ class FakeGateway:
             "command_dispatched": False,
         }
 
+    async def request_initial_pose(self, **kwargs: Any) -> dict[str, Any]:
+        return await self.request_navigation(**kwargs)
+
 
 class FakeGoalValidator:
     def validate(self, **kwargs: Any) -> dict[str, Any]:
@@ -247,6 +251,37 @@ async def test_request_navigation_blocks_before_daemon_without_snapshot() -> Non
     assert result["error_code"] == "BODY_SNAPSHOT_REQUIRED"
     assert result["command_dispatched"] is False
     assert gateway.calls == []
+
+
+@pytest.mark.asyncio
+async def test_request_initial_pose_submits_exact_daemon_contract() -> None:
+    gateway = FakeGateway()
+    service = LimoMCPService(gateway=gateway, goal_validator=FakeGoalValidator())
+    result = await service.request_initial_pose(
+        x=0.75,
+        y=-1.25,
+        yaw=0.35,
+        frame_id="map",
+        body_snapshot_hash="sha256:test-body-snapshot",
+        execution_mode="REAL",
+        action_id="action-limo-initial-pose",
+        wait_timeout_sec=0.0,
+    )
+    assert result["state"] == "QUEUED"
+    call = gateway.calls[0]
+    assert call["capability_id"] == "limo.set_initial_pose"
+    assert call["execution_mode"] == "REAL"
+    assert call["arguments"]["schema_version"] == "limo.initial-pose.v1"
+    assert call["arguments"]["target_pose"]["frame_id"] == "map"
+    assert call["arguments"]["covariance_diagonal"] == [
+        0.25,
+        0.25,
+        0.0,
+        0.0,
+        0.0,
+        0.0685,
+    ]
+    assert call["arguments"]["expected_effect"]["map_to_odom_required"] is True
 
 
 @pytest.mark.asyncio
