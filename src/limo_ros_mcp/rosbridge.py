@@ -54,6 +54,7 @@ class RosbridgeReadOnlyClient:
         self.endpoint = validate_rosbridge_endpoint(endpoint)
         self.timeout_sec = float(timeout_sec)
         self.max_message_bytes = int(max_message_bytes)
+        self.transport_generation = f"rosbridge-{uuid.uuid4()}"
 
     def _connect(self) -> Any:
         # Approved robot endpoints are expected to be directly reachable.  Explicitly

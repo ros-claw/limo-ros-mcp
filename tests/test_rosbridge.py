@@ -61,6 +61,14 @@ def test_call_service_has_no_publish_primitive(monkeypatch: Any) -> None:
     assert isinstance(connect_options["socket"], FakeSocket)
 
 
+def test_each_rosbridge_client_has_a_distinct_transport_generation() -> None:
+    first = RosbridgeReadOnlyClient("ws://127.0.0.1:9090")
+    second = RosbridgeReadOnlyClient("ws://127.0.0.1:9090")
+
+    assert first.transport_generation.startswith("rosbridge-")
+    assert first.transport_generation != second.transport_generation
+
+
 def test_subscribe_once_always_unsubscribes(monkeypatch: Any) -> None:
     connection = FakeConnection(
         [{"op": "publish", "topic": "/imu", "msg": {"orientation": {"w": 1.0}}}]

@@ -14,6 +14,8 @@ AgileX LIMO ROS 1 的独立巡检 MCP 服务。它把 `limo_ros` 的底盘、激
 - Agent 进程仍不提供 ROS advertise/publish、`/cmd_vel`、串口、CAN 或厂商 SDK 工具。
 - 导航只建模为高层 `/move_base` 能力，并经 `rosclawd` 的 `request_action` 路径提交。
 - REAL 必须具备不可变 body snapshot、守护进程签发的许可、已验证执行器以及最终执行回执。
+- `limo_get_patrol_readiness` 返回带 SHA-256 封印的 `limo.readiness.v1`：默认 5 秒有效期，包含 policy hash、观测接收时间、稳定检查项、blocker 与 warning。
+- v0.3 的调用者自报 readiness 布尔值已废弃，只为 SHADOW 兼容保留；在 Navigation Contract v2 与 daemon-owned preflight 完成前，REAL 请求一律 fail closed。
 
 ## 工具
 
@@ -63,11 +65,13 @@ roslaunch rosbridge_server rosbridge_websocket.launch port:=9090
 1. `limo_probe_ros` 检查驱动、AMCL、move_base、地图与传感器 graph。
 2. `limo_get_topic_info` 核对关键 topic 类型、发布者和订阅者。
 3. `limo_sample_topic` 验证状态与导航消息字段和频率。
-4. `limo_get_patrol_readiness` 聚合底盘、激光、定位、导航、地图和诊断证据。
+4. `limo_get_patrol_readiness` 聚合底盘、激光、定位、导航、地图、global/local costmap、诊断和 map→odom→base TF 证据；阈值来自 operator-owned 的 [`configs/limo_readiness_policy.yaml`](configs/limo_readiness_policy.yaml)。
 5. `limo_validate_navigation_goal` 在不下发的情况下验证目标。
 6. 使用当前 body snapshot 提交 SHADOW。
 7. 只有守护进程安全检查、已验证 REAL executor、物理急停和人工授权均满足时，才允许提交精确的 REAL 动作。
 8. 必须用动作状态和执行回执判断结果，不能根据文字输出或 topic 变化猜测成功。
+
+准备度证据、时钟与 fail-closed 语义详见 [`docs/READINESS_EVIDENCE_V1.md`](docs/READINESS_EVIDENCE_V1.md)。Readiness snapshot 只是关联证据，不能替代 daemon 在 dispatch 前重新执行的可信 preflight。
 
 ## 上游来源
 

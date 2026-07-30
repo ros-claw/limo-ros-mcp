@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 import time
+import uuid
 from typing import Any
 
 import yaml
@@ -24,6 +26,8 @@ class RosCliReadOnlyClient:
         self.timeout_sec = float(timeout_sec)
         self.max_output_bytes = int(max_output_bytes)
         self.last_sample_elapsed_sec = 0.0
+        self.transport_generation = f"roscli-{uuid.uuid4()}"
+        self._observed_topic_types: dict[str, str] = {}
         rostopic = shutil.which("rostopic")
         rosnode = shutil.which("rosnode")
         if not rostopic or not rosnode:
@@ -48,25 +52,44 @@ class RosCliReadOnlyClient:
         return output
 
     def probe(self) -> dict[str, Any]:
-        topics = [line.strip() for line in self._run([self.rostopic, "list"]).splitlines()]
-        nodes = [line.strip() for line in self._run([self.rosnode, "list"]).splitlines()]
-        observed_types: list[str] = []
-        for topic in topics:
-            expected = self.topic_types.get(topic)
-            if expected is None:
-                observed_types.append("")
+        verbose = self._run([self.rostopic, "list", "-v"])
+        observed: dict[str, str] = {}
+        in_published = False
+        for line in verbose.splitlines():
+            stripped = line.strip()
+            if stripped == "Published topics:":
+                in_published = True
                 continue
-            observed_types.append(self._run([self.rostopic, "type", topic]).strip())
-        return {"topics": topics, "types": observed_types, "nodes": nodes}
+            if stripped == "Subscribed topics:":
+                in_published = False
+                continue
+            if not in_published:
+                continue
+            match = re.match(r"^\*\s+(\S+)\s+\[([^]]+)]", stripped)
+            if match:
+                observed[match.group(1)] = match.group(2)
+        if not observed:
+            raise RuntimeError("rostopic list -v returned no published topic types")
+        self._observed_topic_types = observed
+        topics = sorted(observed)
+        nodes = [line.strip() for line in self._run([self.rosnode, "list"]).splitlines()]
+        return {"topics": topics, "types": [observed[topic] for topic in topics], "nodes": nodes}
 
-    def topic_info(self, topic: str, expected_type: str) -> dict[str, Any]:
-        if self.topic_types.get(topic) != expected_type:
-            raise ValueError("topic is not present in the immutable LIMO observation allowlist")
-        observed_type = self._run([self.rostopic, "type", topic]).strip()
+    def _verified_type(self, topic: str, expected_type: str) -> str:
+        observed_type = self._observed_topic_types.get(topic)
+        if observed_type is None:
+            observed_type = self._run([self.rostopic, "type", topic]).strip()
+            self._observed_topic_types[topic] = observed_type
         if observed_type != expected_type:
             raise RuntimeError(
                 f"ROS topic type mismatch for {topic}: expected {expected_type}, got {observed_type}"
             )
+        return observed_type
+
+    def topic_info(self, topic: str, expected_type: str) -> dict[str, Any]:
+        if self.topic_types.get(topic) != expected_type:
+            raise ValueError("topic is not present in the immutable LIMO observation allowlist")
+        observed_type = self._verified_type(topic, expected_type)
         output = self._run([self.rostopic, "info", topic])
         publishers: list[str] = []
         subscribers: list[str] = []
@@ -96,14 +119,14 @@ class RosCliReadOnlyClient:
     ) -> list[dict[str, Any]]:
         if self.topic_types.get(topic) != message_type:
             raise ValueError("topic is not present in the immutable LIMO observation allowlist")
-        observed_type = self._run([self.rostopic, "type", topic]).strip()
-        if observed_type != message_type:
-            raise RuntimeError(
-                f"ROS topic type mismatch for {topic}: expected {message_type}, got {observed_type}"
-            )
+        self._verified_type(topic, message_type)
         started = time.monotonic()
         command = [self.rostopic, "echo"]
-        if message_type in {"sensor_msgs/Image", "sensor_msgs/PointCloud2"}:
+        if message_type in {
+            "sensor_msgs/Image",
+            "sensor_msgs/PointCloud2",
+            "nav_msgs/OccupancyGrid",
+        }:
             command.append("--noarr")
         command.extend(["-n", str(count), topic])
         output = self._run(command).strip()

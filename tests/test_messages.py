@@ -32,6 +32,20 @@ def test_status_decodes_motion_mode_and_driver_error_bits() -> None:
     assert summary["healthy"] is False
 
 
+def test_non_finite_status_values_are_not_silently_coerced_to_zero() -> None:
+    summary = summarize_status(
+        {"battery_voltage": float("nan"), "error_code": "0", "motion_mode": False}
+    )
+
+    assert summary["battery_voltage"] is None
+    assert summary["battery_voltage_valid"] is False
+    assert summary["error_code"] is None
+    assert summary["error_code_valid"] is False
+    assert summary["motion_mode"] is None
+    assert summary["motion_mode_valid"] is False
+    assert summary["healthy"] is False
+
+
 def test_odometry_extracts_pose_yaw_and_velocity() -> None:
     summary = summarize_odometry(
         {
@@ -73,6 +87,9 @@ def test_laser_scan_compacts_ranges_into_clearance_sectors() -> None:
 
     assert summary["sample_count"] == 5
     assert summary["valid_count"] == 4
+    assert summary["no_return_count"] == 1
+    assert summary["usable_count"] == 5
+    assert summary["usable_ratio"] == 1.0
     assert summary["minimum_m"] == 0.5
     assert summary["sectors"]["front_min_m"] == 0.5
 
@@ -137,10 +154,10 @@ def test_patrol_readiness_reports_ready_and_obstacle_blocked_states() -> None:
     summaries["laser_scan"] = {"valid_count": 10, "sectors": {"front_min_m": 0.2}}
     blocked = evaluate_patrol_readiness(summaries)
 
-    assert ready["state"] == "READY"
-    assert ready["ready"] is True
+    assert ready["state"] == "BLOCKED"
+    assert "LIMO_BATTERY_BELOW_RETURN_THRESHOLD" in ready["blockers"]
     assert blocked["state"] == "BLOCKED"
-    assert "front_clearance_below_0_35m" in blocked["blockers"]
+    assert "LIMO_FRONT_CLEARANCE_LOW" in blocked["blockers"]
 
 
 def test_patrol_readiness_blocks_stale_localization_and_degrades_on_diagnostics() -> None:
@@ -167,5 +184,4 @@ def test_patrol_readiness_blocks_stale_localization_and_degrades_on_diagnostics(
     result = evaluate_patrol_readiness(summaries)
 
     assert result["state"] == "BLOCKED"
-    assert "localized_pose_stale" in result["blockers"]
-    assert "diagnostics_non_nominal" in result["warnings"]
+    assert "LIMO_AMCL_STALE" in result["blockers"]

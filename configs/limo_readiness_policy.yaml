@@ -1,0 +1,61 @@
+schema_version: limo.readiness-policy.v1
+policy_id: limo-patrol-default
+snapshot_ttl_sec: 5.0
+max_observation_skew_sec: 3.0
+critical_observations:
+  - status
+  - odometry
+  - laser_scan
+  - localized_pose
+  - navigation_status
+  - map_metadata
+  - global_costmap
+  - local_costmap
+  - diagnostics
+  - tf
+thresholds:
+  # The Melodic LIMO driver stamp trails local receipt by roughly 0.7 s; the
+  # bounded concurrent evidence window adds up to ~1.5 s on the onboard ARM CPU.
+  status_fresh_sec: 3.0
+  odom_fresh_sec: 2.0
+  imu_fresh_sec: 2.0
+  laser_fresh_sec: 2.0
+  amcl_fresh_sec: 5.0
+  navigation_fresh_sec: 5.0
+  costmap_fresh_sec: 5.0
+  diagnostics_fresh_sec: 5.0
+  front_clearance_m: 0.35
+  # The LIMO YDLidar stream reports unsupported angular slots as zero; the
+  # observed forward/left/right coverage is stable at roughly 44% of 450 slots.
+  laser_valid_ratio: 0.40
+  amcl_variance_x: 1.0
+  amcl_variance_y: 1.0
+  amcl_variance_yaw: 0.5
+  battery_return_voltage: 10.0
+severities:
+  CLOCK_VERIFIED: BLOCK
+  OBSERVATION_WINDOW_COHERENT: BLOCK
+  STATUS_AVAILABLE: BLOCK
+  STATUS_FRESH: BLOCK
+  ERROR_CODE_ZERO: BLOCK
+  MOTION_MODE_KNOWN: BLOCK
+  BATTERY_ABOVE_RETURN_THRESHOLD: BLOCK
+  ODOM_AVAILABLE: BLOCK
+  ODOM_FRESH: BLOCK
+  IMU_AVAILABLE: WARN
+  IMU_FRESH: WARN
+  LASER_AVAILABLE: BLOCK
+  LASER_FRESH: BLOCK
+  LASER_VALID_RATIO: BLOCK
+  FRONT_CLEARANCE: BLOCK
+  AMCL_AVAILABLE: BLOCK
+  AMCL_FRESH: BLOCK
+  AMCL_COVARIANCE: BLOCK
+  MOVE_BASE_AVAILABLE: BLOCK
+  MAP_METADATA_VALID: BLOCK
+  GLOBAL_COSTMAP_FRESH: BLOCK
+  LOCAL_COSTMAP_FRESH: BLOCK
+  DIAGNOSTICS_ERROR_ZERO: BLOCK
+  DIAGNOSTICS_WARN_POLICY: WARN
+  TF_MAP_ODOM_BASE: BLOCK
+  BODY_SNAPSHOT_BOUND: WARN

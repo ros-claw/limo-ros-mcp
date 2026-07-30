@@ -31,6 +31,9 @@ def test_contract_exposes_only_source_backed_interfaces() -> None:
     )
     assert interfaces["/limo_status"]["ros_type"] == "limo_base/LimoStatus"
     assert interfaces["/cmd_vel"]["enabled"] is False
+    assert contract["safety"]["readiness_evidence_schema"] == "limo.readiness.v1"
+    assert contract["safety"]["legacy_booleans_usable_for_real"] is False
+    assert contract["safety"]["real_navigation_enabled"] is False
     assert contract["geometry"] == {
         "wheelbase_m": 0.2,
         "track_m": 0.172,

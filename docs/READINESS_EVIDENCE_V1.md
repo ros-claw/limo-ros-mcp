@@ -1,0 +1,39 @@
+# ReadinessEvidenceV1
+
+`limo_get_patrol_readiness` produces an advisory, read-only evidence document with
+`schema_version: limo.readiness.v1`. It never authorizes or dispatches motion.
+
+## Integrity and lifetime
+
+- JSON is serialized as UTF-8 with sorted keys, compact separators, and non-finite numbers rejected.
+- `snapshot_hash` is `sha256:` plus the digest of the document with `snapshot_hash` omitted.
+- The default lifetime is five seconds. `created_wall_time` and `expires_wall_time` make expiry machine-checkable.
+- `policy_hash` binds the snapshot to the exact operator policy.
+- Checks, blockers, warnings, and observations use stable ordering.
+- Raw images, point clouds, and occupancy grids are not embedded. Their raw forms are denied at the MCP boundary.
+
+`validate_readiness_snapshot` verifies schema, digest, and expiry. Validation still marks the evidence as advisory and unusable as REAL authorization.
+
+## Time evidence
+
+Each observation records the ROS header stamp when present, the local wall/monotonic receive times, age, freshness basis, and clock classification.
+
+- Headerless driver messages use the actual receive time and are marked `RECEIVE_TIME`.
+- A future ROS stamp invalidates the clock.
+- Missing receive wall or monotonic time fails `CLOCK_VERIFIED`.
+- ROS time and wall time are not subtracted when simulation time is active.
+- The critical observation window must remain within the operator policy skew limit.
+
+## Default checks
+
+The default policy covers status/error/motion mode/battery, odometry, IMU, laser validity and front clearance, AMCL freshness and covariance, move_base status, map metadata, both costmaps, diagnostics, and the map→odom→base TF chain. Every threshold includes a unit and is constrained by code-level safe bounds before the policy is accepted.
+
+The LIMO YDLidar publishes 450 range slots while unsupported angular slots are encoded as zero. The default usable-ratio threshold is therefore 0.40, validated against the observed ~0.44 stream. This quality check does not replace the independent front-clearance and freshness blockers.
+
+The Melodic LIMO status header trails local receipt by roughly 0.7 seconds on the validated robot, while the concurrent eleven-topic window takes up to about 1.5 seconds on its ARM CPU. The status freshness threshold is therefore 3.0 seconds; receive-time evidence and the separate 3.0-second observation-window coherence check remain mandatory.
+
+Failed `BLOCK` checks yield `BLOCKED`; failed `WARN` checks yield `DEGRADED` only when no blocker exists. Missing or invalid critical evidence never produces `READY`.
+
+## Current boundary
+
+This is client-side evidence. A snapshot hash can correlate a later request, but it is not a trust root. v0.3 blocks REAL navigation that relies on the legacy caller-supplied booleans. Navigation Contract v2 and a daemon-owned ROS 1 preflight/executor/lease guard are separate follow-up gates.

@@ -7,6 +7,8 @@ import time
 from typing import Any
 
 from limo_ros_mcp.contract import MOTION_MODE_NAMES, decode_limo_error_code
+from limo_ros_mcp.readiness import evaluate_summaries
+from limo_ros_mcp.schemas import ReadinessEvidenceV1
 
 GOAL_STATUS_NAMES = {
     0: "PENDING",
@@ -32,11 +34,17 @@ def _list(value: Any) -> list[Any]:
     return value if isinstance(value, list) else []
 
 
-def _number(value: Any, default: float = 0.0) -> float:
+def _numeric_list(value: Any) -> tuple[list[float | None], bool]:
+    raw = _list(value)
+    numbers = [_number(item) for item in raw]
+    return numbers, bool(raw) and all(item is not None for item in numbers)
+
+
+def _number(value: Any) -> float | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return default
+        return None
     result = float(value)
-    return result if math.isfinite(result) else default
+    return result if math.isfinite(result) else None
 
 
 def ros_stamp_seconds(message: dict[str, Any]) -> float | None:
@@ -45,10 +53,10 @@ def ros_stamp_seconds(message: dict[str, Any]) -> float | None:
     stamp = _mapping(_mapping(message.get("header")).get("stamp"))
     secs = stamp.get("secs")
     nsecs = stamp.get("nsecs", 0)
-    if isinstance(secs, bool) or not isinstance(secs, (int, float)):
+    if isinstance(secs, bool) or not isinstance(secs, (int, float)) or not math.isfinite(secs):
         return None
-    if isinstance(nsecs, bool) or not isinstance(nsecs, (int, float)):
-        nsecs = 0
+    if isinstance(nsecs, bool) or not isinstance(nsecs, (int, float)) or not math.isfinite(nsecs):
+        return None
     return float(secs) + float(nsecs) / 1_000_000_000.0
 
 
@@ -59,11 +67,14 @@ def message_age_seconds(message: dict[str, Any], *, now: float | None = None) ->
     return max(0.0, (time.time() if now is None else now) - stamp)
 
 
-def _quaternion_yaw(orientation: dict[str, Any]) -> float:
+def _quaternion_yaw(orientation: dict[str, Any]) -> float | None:
     x = _number(orientation.get("x"))
     y = _number(orientation.get("y"))
     z = _number(orientation.get("z"))
-    w = _number(orientation.get("w"), 1.0)
+    w = _number(orientation.get("w"))
+    if any(value is None for value in (x, y, z, w)):
+        return None
+    assert x is not None and y is not None and z is not None and w is not None
     return math.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
 
 
@@ -81,9 +92,21 @@ def _pose_summary(pose_value: Any) -> dict[str, Any]:
             "x": _number(orientation.get("x")),
             "y": _number(orientation.get("y")),
             "z": _number(orientation.get("z")),
-            "w": _number(orientation.get("w"), 1.0),
+            "w": _number(orientation.get("w")),
             "yaw_rad": _quaternion_yaw(orientation),
         },
+        "valid": all(
+            _number(value) is not None
+            for value in (
+                position.get("x"),
+                position.get("y"),
+                position.get("z"),
+                orientation.get("x"),
+                orientation.get("y"),
+                orientation.get("z"),
+                orientation.get("w"),
+            )
+        ),
     }
 
 
@@ -98,19 +121,39 @@ def _header_summary(message: dict[str, Any]) -> dict[str, Any]:
 
 
 def summarize_status(message: dict[str, Any]) -> dict[str, Any]:
-    error_code_value = message.get("error_code", 0)
-    error_code = error_code_value if isinstance(error_code_value, int) else 0
-    motion_mode_value = message.get("motion_mode", 255)
-    motion_mode = motion_mode_value if isinstance(motion_mode_value, int) else 255
+    error_code_value = message.get("error_code")
+    error_code = (
+        error_code_value
+        if isinstance(error_code_value, int) and not isinstance(error_code_value, bool)
+        else None
+    )
+    motion_mode_value = message.get("motion_mode")
+    motion_mode = (
+        motion_mode_value
+        if isinstance(motion_mode_value, int) and not isinstance(motion_mode_value, bool)
+        else None
+    )
+    battery_voltage = _number(message.get("battery_voltage"))
     return {
         "header": _header_summary(message),
         "vehicle_state": message.get("vehicle_state"),
         "control_mode": message.get("control_mode"),
-        "battery_voltage": _number(message.get("battery_voltage")),
+        "battery_voltage": battery_voltage,
+        "battery_voltage_valid": battery_voltage is not None,
         "error_code": error_code,
-        "error_flags": decode_limo_error_code(error_code),
+        "error_code_valid": error_code is not None and 0 <= error_code <= 0xFFFF,
+        "error_flags": (
+            decode_limo_error_code(error_code)
+            if error_code is not None and 0 <= error_code <= 0xFFFF
+            else []
+        ),
         "motion_mode": motion_mode,
-        "motion_mode_name": MOTION_MODE_NAMES.get(motion_mode, "unrecognized"),
+        "motion_mode_name": (
+            MOTION_MODE_NAMES.get(motion_mode, "unrecognized")
+            if motion_mode is not None
+            else "invalid"
+        ),
+        "motion_mode_valid": motion_mode in {0, 1, 2},
         "healthy": error_code == 0 and motion_mode in {0, 1, 2},
     }
 
@@ -121,6 +164,8 @@ def summarize_odometry(message: dict[str, Any]) -> dict[str, Any]:
     twist = _mapping(twist_container.get("twist"))
     linear = _mapping(twist.get("linear"))
     angular = _mapping(twist.get("angular"))
+    pose_covariance, pose_covariance_valid = _numeric_list(pose_container.get("covariance"))
+    twist_covariance, twist_covariance_valid = _numeric_list(twist_container.get("covariance"))
     return {
         "header": _header_summary(message),
         "child_frame_id": str(message.get("child_frame_id", "")),
@@ -131,8 +176,10 @@ def summarize_odometry(message: dict[str, Any]) -> dict[str, Any]:
             "linear_z_mps": _number(linear.get("z")),
             "angular_z_radps": _number(angular.get("z")),
         },
-        "pose_covariance": _list(pose_container.get("covariance")),
-        "twist_covariance": _list(twist_container.get("covariance")),
+        "pose_covariance": pose_covariance,
+        "pose_covariance_valid": pose_covariance_valid,
+        "twist_covariance": twist_covariance,
+        "twist_covariance_valid": twist_covariance_valid,
     }
 
 
@@ -140,20 +187,24 @@ def summarize_imu(message: dict[str, Any]) -> dict[str, Any]:
     orientation = _mapping(message.get("orientation"))
     angular = _mapping(message.get("angular_velocity"))
     acceleration = _mapping(message.get("linear_acceleration"))
+    orientation_covariance, orientation_covariance_valid = _numeric_list(
+        message.get("orientation_covariance")
+    )
     return {
         "header": _header_summary(message),
         "orientation": {
             "x": _number(orientation.get("x")),
             "y": _number(orientation.get("y")),
             "z": _number(orientation.get("z")),
-            "w": _number(orientation.get("w"), 1.0),
+            "w": _number(orientation.get("w")),
             "yaw_rad": _quaternion_yaw(orientation),
         },
         "angular_velocity_radps": {axis: _number(angular.get(axis)) for axis in ("x", "y", "z")},
         "linear_acceleration_mps2": {
             axis: _number(acceleration.get(axis)) for axis in ("x", "y", "z")
         },
-        "orientation_covariance": _list(message.get("orientation_covariance")),
+        "orientation_covariance": orientation_covariance,
+        "orientation_covariance_valid": orientation_covariance_valid,
     }
 
 
@@ -178,25 +229,57 @@ def summarize_laser_scan(message: dict[str, Any]) -> dict[str, Any]:
     angle_min = _number(message.get("angle_min"))
     angle_increment = _number(message.get("angle_increment"))
     range_min = _number(message.get("range_min"))
-    range_max = _number(message.get("range_max"), math.inf)
+    range_max = _number(message.get("range_max"))
+    scan_parameters_valid = all(
+        value is not None for value in (angle_min, angle_increment, range_min, range_max)
+    )
     raw_ranges = _list(message.get("ranges"))
     samples: list[tuple[float, float]] = []
+    finite_valid_count = 0
+    no_return_count = 0
     for index, raw in enumerate(raw_ranges):
         if isinstance(raw, bool) or not isinstance(raw, (int, float)):
             continue
         distance = float(raw)
-        if math.isfinite(distance) and distance >= range_min and distance <= range_max:
+        if (
+            scan_parameters_valid
+            and math.isfinite(distance)
+            and range_min is not None
+            and range_max is not None
+            and angle_min is not None
+            and angle_increment is not None
+            and distance >= range_min
+            and distance <= range_max
+        ):
             angle = angle_min + index * angle_increment
             samples.append((angle, distance))
+            finite_valid_count += 1
+        elif (
+            scan_parameters_valid
+            and math.isinf(distance)
+            and distance > 0.0
+            and range_max is not None
+            and angle_min is not None
+            and angle_increment is not None
+        ):
+            # ROS lidars commonly encode "no obstacle within range" as +Inf. It is
+            # usable coverage for clearance, but remains distinct from a finite hit.
+            angle = angle_min + index * angle_increment
+            samples.append((angle, range_max))
+            no_return_count += 1
     distances = [distance for _angle, distance in samples]
     closest = min(samples, key=lambda item: item[1]) if samples else None
     return {
         "header": _header_summary(message),
         "sample_count": len(raw_ranges),
-        "valid_count": len(samples),
+        "valid_count": finite_valid_count,
+        "no_return_count": no_return_count,
+        "usable_count": len(samples),
+        "usable_ratio": len(samples) / len(raw_ranges) if raw_ranges else None,
         "invalid_count": len(raw_ranges) - len(samples),
+        "parameters_valid": scan_parameters_valid,
         "range_min_m": range_min,
-        "range_max_m": None if math.isinf(range_max) else range_max,
+        "range_max_m": range_max,
         "minimum_m": min(distances) if distances else None,
         "p10_m": _quantile(distances, 0.10),
         "median_m": _quantile(distances, 0.50),
@@ -216,11 +299,12 @@ def summarize_laser_scan(message: dict[str, Any]) -> dict[str, Any]:
 
 def summarize_localized_pose(message: dict[str, Any]) -> dict[str, Any]:
     pose_container = _mapping(message.get("pose"))
-    covariance = _list(pose_container.get("covariance"))
+    covariance, covariance_valid = _numeric_list(pose_container.get("covariance"))
     return {
         "header": _header_summary(message),
         "pose": _pose_summary(pose_container.get("pose")),
         "covariance": covariance,
+        "covariance_valid": covariance_valid and len(covariance) == 36,
         "position_variance_x": covariance[0] if len(covariance) > 0 else None,
         "position_variance_y": covariance[7] if len(covariance) > 7 else None,
         "yaw_variance": covariance[35] if len(covariance) > 35 else None,
@@ -257,7 +341,10 @@ def summarize_path(message: dict[str, Any]) -> dict[str, Any]:
         pose_stamped = _mapping(raw)
         pose = _mapping(pose_stamped.get("pose"))
         position = _mapping(pose.get("position"))
-        points.append((_number(position.get("x")), _number(position.get("y"))))
+        x = _number(position.get("x"))
+        y = _number(position.get("y"))
+        if x is not None and y is not None:
+            points.append((x, y))
     length = sum(
         math.hypot(bx - ax, by - ay) for (ax, ay), (bx, by) in zip(points, points[1:], strict=False)
     )
@@ -285,8 +372,9 @@ def summarize_map(message: dict[str, Any]) -> dict[str, Any]:
         "resolution_m": resolution,
         "width_cells": width,
         "height_cells": height,
-        "width_m": width * resolution,
-        "height_m": height * resolution,
+        "width_m": width * resolution if resolution is not None else None,
+        "height_m": height * resolution if resolution is not None else None,
+        "metadata_valid": resolution is not None and resolution > 0.0 and width > 0 and height > 0,
         "origin": _pose_summary(_mapping(info.get("origin"))),
         "cell_count": len(data),
         "known_cell_count": len(known),
@@ -400,72 +488,7 @@ def summarize_observation(observation: str, message: dict[str, Any]) -> dict[str
     }
 
 
-def evaluate_patrol_readiness(summaries: dict[str, dict[str, Any]]) -> dict[str, Any]:
-    """Evaluate message-level readiness without authorizing or dispatching motion."""
+def evaluate_patrol_readiness(summaries: dict[str, dict[str, Any]]) -> ReadinessEvidenceV1:
+    """Compatibility wrapper returning hash-sealed ReadinessEvidenceV1."""
 
-    blockers: list[str] = []
-    warnings: list[str] = []
-    status = summaries.get("status")
-    if status is None:
-        blockers.append("limo_status_unavailable")
-    else:
-        if status.get("error_code") != 0:
-            blockers.append("limo_error_code_nonzero")
-        if status.get("motion_mode") not in {0, 1, 2}:
-            blockers.append("motion_mode_unknown")
-    for required in ("laser_scan", "localized_pose", "navigation_status", "map_metadata"):
-        if required not in summaries:
-            blockers.append(f"{required}_unavailable")
-    scan = summaries.get("laser_scan")
-    if scan is not None:
-        front_min = _mapping(scan.get("sectors")).get("front_min_m")
-        if isinstance(front_min, (int, float)) and not isinstance(front_min, bool):
-            if float(front_min) < 0.35:
-                blockers.append("front_clearance_below_0_35m")
-        elif scan.get("valid_count", 0) == 0:
-            blockers.append("laser_scan_has_no_valid_ranges")
-    pose = summaries.get("localized_pose")
-    if pose is not None:
-        x_variance = pose.get("position_variance_x")
-        y_variance = pose.get("position_variance_y")
-        yaw_variance = pose.get("yaw_variance")
-        if any(
-            isinstance(value, (int, float)) and not isinstance(value, bool) and float(value) > limit
-            for value, limit in ((x_variance, 1.0), (y_variance, 1.0), (yaw_variance, 0.5))
-        ):
-            warnings.append("localization_covariance_high")
-    for useful in ("odometry", "imu", "diagnostics"):
-        if useful not in summaries:
-            warnings.append(f"{useful}_unavailable")
-    freshness_limits = {
-        "status": 2.0,
-        "odometry": 2.0,
-        "imu": 2.0,
-        "laser_scan": 2.0,
-        "localized_pose": 5.0,
-        "navigation_status": 5.0,
-    }
-    blocker_if_stale = {"status", "laser_scan", "localized_pose"}
-    for observation, limit in freshness_limits.items():
-        summary = summaries.get(observation)
-        if summary is None:
-            continue
-        age = _mapping(summary.get("header")).get("age_sec")
-        if isinstance(age, (int, float)) and not isinstance(age, bool) and float(age) > limit:
-            issue = f"{observation}_stale"
-            if observation in blocker_if_stale:
-                blockers.append(issue)
-            else:
-                warnings.append(issue)
-    diagnostics = summaries.get("diagnostics")
-    if diagnostics is not None and not diagnostics.get("healthy", True):
-        warnings.append("diagnostics_non_nominal")
-    state = "BLOCKED" if blockers else ("DEGRADED" if warnings else "READY")
-    return {
-        "ready": not blockers,
-        "state": state,
-        "blockers": sorted(set(blockers)),
-        "warnings": sorted(set(warnings)),
-        "evaluated_observations": sorted(summaries),
-        "command_dispatched": False,
-    }
+    return evaluate_summaries(summaries)
