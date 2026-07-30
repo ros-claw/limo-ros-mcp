@@ -1,7 +1,7 @@
 {
   "schema_version": "1.0",
   "name": "limo-ros-mcp",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "robot": "AgileX LIMO",
   "transport": "stdio",
   "entrypoint": "limo-ros-mcp",

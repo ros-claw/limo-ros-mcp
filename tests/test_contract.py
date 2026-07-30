@@ -7,7 +7,6 @@ from limo_ros_mcp.contract import (
     decode_limo_error_code,
     get_limo_contract,
     list_limo_observations,
-    validate_navigation_goal,
     validate_velocity_command,
 )
 
@@ -39,36 +38,6 @@ def test_contract_exposes_only_source_backed_interfaces() -> None:
         "track_m": 0.172,
         "wheel_radius_m": 0.045,
     }
-
-
-def test_navigation_goal_fails_closed_on_missing_preconditions() -> None:
-    result = validate_navigation_goal(
-        x=1.0,
-        y=2.0,
-        yaw=0.0,
-        frame_id="map",
-        localization_ready=False,
-        costmap_ready=True,
-        obstacle_check_enabled=True,
-    )
-
-    assert result["decision"] == "BLOCK"
-    assert "localization_ready is required" in result["violations"]
-
-
-def test_navigation_goal_allows_validated_plan_without_dispatch() -> None:
-    result = validate_navigation_goal(
-        x=1.0,
-        y=-2.0,
-        yaw=0.5,
-        frame_id="map",
-        localization_ready=True,
-        costmap_ready=True,
-        obstacle_check_enabled=True,
-    )
-
-    assert result["decision"] == "ALLOW"
-    assert result["command_dispatched"] is False
 
 
 def test_velocity_validation_is_diagnostic_and_mode_aware() -> None:

@@ -247,15 +247,14 @@ LIMO_INTERFACE_CONTRACT: dict[str, Any] = {
         "max_velocity_command_duration_sec": 1.0,
         "readiness_evidence_schema": "limo.readiness.v1",
         "readiness_policy": "configs/limo_readiness_policy.yaml",
-        "legacy_shadow_preconditions": [
-            "localization_ready",
-            "costmap_ready",
-            "obstacle_check_enabled",
-        ],
+        "navigation_contract_schema": "limo.navigation.v2",
+        "navigation_policy": "configs/patrol_lab.example.yaml",
+        "readiness_reference_same_process_required": True,
+        "body_snapshot_binding_required": True,
         "legacy_booleans_usable_for_real": False,
         "real_navigation_enabled": False,
         "real_navigation_blocker": (
-            "Navigation Contract v2 and daemon-owned trusted preflight are not implemented."
+            "Daemon-owned trusted preflight and a verified executor are not implemented."
         ),
     },
     "evidence_boundary": {
@@ -303,55 +302,6 @@ def _finite_number(name: str, value: Any) -> float:
     if not math.isfinite(result):
         raise ValueError(f"{name} must be finite")
     return result
-
-
-def validate_navigation_goal(
-    *,
-    x: Any,
-    y: Any,
-    yaw: Any,
-    frame_id: str,
-    localization_ready: bool,
-    costmap_ready: bool,
-    obstacle_check_enabled: bool,
-) -> dict[str, Any]:
-    """Validate a high-level ROS 1 move_base goal without dispatching it."""
-
-    violations: list[str] = []
-    try:
-        x_value = _finite_number("x", x)
-        y_value = _finite_number("y", y)
-        yaw_value = _finite_number("yaw", yaw)
-    except ValueError as exc:
-        return {"ok": False, "decision": "BLOCK", "violations": [str(exc)]}
-
-    if frame_id not in {"map", "odom"}:
-        violations.append("frame_id must be 'map' or 'odom'")
-    if abs(x_value) > 100.0 or abs(y_value) > 100.0:
-        violations.append("goal exceeds the conservative 100 m coordinate envelope")
-    if not -math.pi <= yaw_value <= math.pi:
-        violations.append("yaw must be within [-pi, pi]")
-    if not localization_ready:
-        violations.append("localization_ready is required")
-    if not costmap_ready:
-        violations.append("costmap_ready is required")
-    if not obstacle_check_enabled:
-        violations.append("obstacle_check_enabled is required")
-
-    if violations:
-        return {"ok": False, "decision": "BLOCK", "violations": violations}
-    return {
-        "ok": True,
-        "decision": "ALLOW",
-        "violations": [],
-        "normalized_goal": {
-            "frame_id": frame_id,
-            "x": x_value,
-            "y": y_value,
-            "yaw": yaw_value,
-        },
-        "command_dispatched": False,
-    }
 
 
 def validate_velocity_command(

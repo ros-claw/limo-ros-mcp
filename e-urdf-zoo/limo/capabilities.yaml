@@ -43,17 +43,22 @@ capabilities:
     description: Submit an obstacle-aware move_base goal through rosclawd.
     skill_type: guarded
     inputs:
-      - {name: frame_id, type: str, enum: [map, odom]}
+      - {name: frame_id, type: str, enum: [map]}
       - {name: x, type: float, unit: m}
       - {name: y, type: float, unit: m}
       - {name: yaw, type: float, unit: rad}
+      - {name: readiness_snapshot_hash, type: str}
+      - {name: body_snapshot_hash, type: str}
+      - {name: route_policy_id, type: str}
     preconditions:
-      - localization_ready
-      - costmap_ready
-      - obstacle_check_enabled
-      - limo_status_fresh
-      - error_code_zero
-      - motion_mode_known
+      - same_process_readiness_snapshot_ready
+      - readiness_snapshot_unexpired
+      - body_snapshot_hash_matches_readiness
+      - operator_route_policy_matches
+      - map_artifact_hashes_match
+      - goal_inside_geofence
+      - goal_clear_in_occupancy_grid
+      - daemon_owned_preflight_for_real
     constraints: {direct_cmd_vel: false, receipt_required: true}
 
   - id: limo_inspect_ros_graph
