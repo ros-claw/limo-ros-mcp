@@ -238,6 +238,16 @@ LIMO_INTERFACE_CONTRACT: dict[str, Any] = {
             "enabled": False,
             "reason": "Direct Agent publishing is forbidden; use guarded high-level navigation.",
         },
+        {
+            "capability_id": "limo.set_initial_pose",
+            "kind": "actuation",
+            "ros_kind": "topic",
+            "ros_name": "/initialpose",
+            "ros_type": "geometry_msgs/PoseWithCovarianceStamped",
+            "read_only": False,
+            "execution_boundary": "rosclawd.request_action",
+            "worker_protocol": "rosclaw.limo.worker.v1",
+        },
     ],
     "safety": {
         "direct_cmd_vel_exposed": False,
@@ -256,6 +266,8 @@ LIMO_INTERFACE_CONTRACT: dict[str, Any] = {
         "real_navigation_blocker": (
             "Daemon-owned trusted preflight and a verified executor are not implemented."
         ),
+        "real_initial_pose_enabled": True,
+        "initial_pose_contract_schema": "limo.initial-pose.v1",
     },
     "evidence_boundary": {
         "static_contract_is_hardware_evidence": False,

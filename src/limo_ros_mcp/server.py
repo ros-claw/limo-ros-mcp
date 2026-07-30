@@ -816,6 +816,74 @@ class LimoMCPService:
         except Exception as exc:  # noqa: BLE001 - MCP boundary returns structured errors
             return _control_error("request_navigation", exc)
 
+    async def request_initial_pose(
+        self,
+        *,
+        x: float,
+        y: float,
+        yaw: float,
+        frame_id: str,
+        body_snapshot_hash: str,
+        route_policy_id: str = "lab-default",
+        execution_mode: str = "SHADOW",
+        principal_id: str = "",
+        approval_id: str | None = None,
+        action_id: str | None = None,
+        wait_timeout_sec: float = 2.0,
+    ) -> dict[str, Any]:
+        mode = str(execution_mode).upper()
+        if mode not in {"SHADOW", "REAL"}:
+            return self._navigation_block(
+                "INVALID_EXECUTION_MODE", "Only SHADOW or REAL may be submitted to rosclawd."
+            )
+        if not str(body_snapshot_hash).strip():
+            return self._navigation_block(
+                "BODY_SNAPSHOT_REQUIRED",
+                "Initial-pose requests require an immutable LIMO body snapshot.",
+            )
+        if isinstance(wait_timeout_sec, bool) or not 0.0 <= float(wait_timeout_sec) <= 30.0:
+            raise ValueError("wait_timeout_sec must be within [0, 30]")
+        validation = self._goal_validator.validate(
+            x=x,
+            y=y,
+            yaw=yaw,
+            frame_id=frame_id,
+            route_policy_id=route_policy_id,
+        )
+        if not validation["ok"]:
+            return validation
+        pose = validation["normalized_goal"]
+        try:
+            response = await self._gateway.request_initial_pose(
+                capability_id="limo.set_initial_pose",
+                arguments={
+                    "schema_version": "limo.initial-pose.v1",
+                    "target_pose": pose,
+                    "route_policy_id": validation["route_policy_id"],
+                    "route_policy_hash": validation["route_policy_hash"],
+                    "map_id": validation["map_id"],
+                    "map_image_hash": validation["map_image_hash"],
+                    "covariance_diagonal": [0.25, 0.25, 0.0, 0.0, 0.0, 0.0685],
+                    "expected_effect": {
+                        "kind": "localization_initialized",
+                        "final_frame": "map",
+                        "map_to_odom_required": True,
+                    },
+                },
+                execution_mode=mode,
+                body_snapshot_hash=body_snapshot_hash,
+                principal_id=principal_id,
+                approval_id=approval_id,
+                body_id="limo",
+                action_id=action_id,
+                required_evidence="TASK_VERIFIED",
+                timeout_sec=15.0,
+                wait_timeout_sec=float(wait_timeout_sec),
+            )
+            return {**response, "initial_pose_contract": validation}
+        except Exception as exc:  # noqa: BLE001 - MCP boundary returns structured errors
+            return _control_error("request_initial_pose", exc)
+
     async def action_status(self, action_id: str) -> dict[str, Any]:
         try:
             return await self._gateway.action_status(action_id)
@@ -1113,6 +1181,39 @@ def build_mcp_server(service: LimoMCPService | None = None) -> FastMCP:
             route_policy_id=route_policy_id,
             goal_tolerance_xy_m=goal_tolerance_xy_m,
             goal_tolerance_yaw_rad=goal_tolerance_yaw_rad,
+            execution_mode=execution_mode,
+            principal_id=principal_id,
+            approval_id=approval_id,
+            action_id=action_id,
+            wait_timeout_sec=wait_timeout_sec,
+        )
+
+    @mcp.tool(
+        description=(
+            "Submit a map-validated AMCL initial-pose estimate to rosclawd. The daemon-owned "
+            "LIMO executor is the only component allowed to publish /initialpose."
+        )
+    )
+    async def limo_request_initial_pose(
+        x: float,
+        y: float,
+        yaw: float,
+        body_snapshot_hash: str,
+        frame_id: str = "map",
+        route_policy_id: str = "lab-default",
+        execution_mode: str = "SHADOW",
+        principal_id: str = "",
+        approval_id: str | None = None,
+        action_id: str | None = None,
+        wait_timeout_sec: float = 2.0,
+    ) -> dict[str, Any]:
+        return await implementation.request_initial_pose(
+            x=x,
+            y=y,
+            yaw=yaw,
+            frame_id=frame_id,
+            body_snapshot_hash=body_snapshot_hash,
+            route_policy_id=route_policy_id,
             execution_mode=execution_mode,
             principal_id=principal_id,
             approval_id=approval_id,

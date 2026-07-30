@@ -1,6 +1,6 @@
 # limo-ros-mcp
 
-Inspection-focused MCP server for the AgileX LIMO ROS 1 platform. It converts the documented `limo_ros` base, lidar, localization, navigation, mapping, diagnostics, TF, and RGB-D interfaces into 21 MCP tools for Codex. State-changing requests remain delegated to the ROSClaw daemon.
+Inspection-focused MCP server for the AgileX LIMO ROS 1 platform. It converts the documented `limo_ros` base, lidar, localization, navigation, mapping, diagnostics, TF, and RGB-D interfaces into 22 MCP tools for Codex. State-changing requests remain delegated to the ROSClaw daemon.
 
 The ROSClaw embodiment assets live in `e-urdf-zoo/limo`, with the project template and ROS embodiment card under `configs/`.
 
@@ -31,7 +31,7 @@ The current real-robot interface verification and patrol preflight findings are 
 | Message inspection | `limo_observe`, `limo_sample_topic` |
 | Inspection snapshots | `limo_get_base_state`, `limo_get_laser_summary`, `limo_get_localization_state`, `limo_get_navigation_state`, `limo_get_map_summary`, `limo_get_diagnostics`, `limo_get_transform_state`, `limo_get_patrol_readiness` |
 | Validation | `limo_validate_navigation_goal`, `limo_validate_velocity_command` |
-| ROSClaw control plane | `limo_get_runtime_status`, `limo_request_navigation`, `limo_get_action_status`, `limo_get_execution_receipt`, `limo_emergency_stop` |
+| ROSClaw control plane | `limo_get_runtime_status`, `limo_request_navigation`, `limo_request_initial_pose`, `limo_get_action_status`, `limo_get_execution_receipt`, `limo_emergency_stop` |
 
 ## Installation
 
