@@ -6,7 +6,7 @@
 - Repository: `ros-claw/limo-ros-mcp`
 - Baseline: `main@1b45b648f3b566a81e000ab279fa7b804ffb6dd0`
 - Branch: `agent/readiness-evidence-v1`
-- PR: pending publication
+- PR: https://github.com/ros-claw/limo-ros-mcp/pull/3
 - Target package version: `0.3.0`
 
 ## Implemented requirements
@@ -116,4 +116,4 @@ Additional P0 follow-ups remain:
 
 PR-2 must implement Navigation Contract v2: replace legacy booleans with an evidence reference, validate expiry/tampering, add map/geofence/no-go/occupied/plan checks, and keep REAL blocked until the ROSClaw companion daemon preflight/executor exists.
 
-Git status and the final PR URL are recorded after publication.
+Publication status: branch pushed, Draft PR opened, and the local branch tracks its remote.
