@@ -15,6 +15,8 @@ def test_default_policy_has_stable_identity_and_safe_thresholds() -> None:
     assert policy.policy_hash.startswith("sha256:")
     assert policy.snapshot_ttl_sec == 5.0
     assert policy.thresholds["front_clearance_m"] == 0.35
+    assert policy.thresholds["laser_valid_ratio"] == 0.40
+    assert policy.thresholds["status_fresh_sec"] == 3.0
 
 
 def test_policy_cannot_expand_threshold_beyond_code_safety_bounds(tmp_path: Path) -> None:

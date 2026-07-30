@@ -87,6 +87,9 @@ def test_laser_scan_compacts_ranges_into_clearance_sectors() -> None:
 
     assert summary["sample_count"] == 5
     assert summary["valid_count"] == 4
+    assert summary["no_return_count"] == 1
+    assert summary["usable_count"] == 5
+    assert summary["usable_ratio"] == 1.0
     assert summary["minimum_m"] == 0.5
     assert summary["sectors"]["front_min_m"] == 0.5
 

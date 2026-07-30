@@ -14,7 +14,9 @@ critical_observations:
   - diagnostics
   - tf
 thresholds:
-  status_fresh_sec: 2.0
+  # The Melodic LIMO driver stamp trails local receipt by roughly 0.7 s; the
+  # bounded concurrent evidence window adds up to ~1.5 s on the onboard ARM CPU.
+  status_fresh_sec: 3.0
   odom_fresh_sec: 2.0
   imu_fresh_sec: 2.0
   laser_fresh_sec: 2.0
@@ -23,7 +25,9 @@ thresholds:
   costmap_fresh_sec: 5.0
   diagnostics_fresh_sec: 5.0
   front_clearance_m: 0.35
-  laser_valid_ratio: 0.50
+  # The LIMO YDLidar stream reports unsupported angular slots as zero; the
+  # observed forward/left/right coverage is stable at roughly 44% of 450 slots.
+  laser_valid_ratio: 0.40
   amcl_variance_x: 1.0
   amcl_variance_y: 1.0
   amcl_variance_yaw: 0.5

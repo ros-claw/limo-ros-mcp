@@ -235,6 +235,8 @@ def summarize_laser_scan(message: dict[str, Any]) -> dict[str, Any]:
     )
     raw_ranges = _list(message.get("ranges"))
     samples: list[tuple[float, float]] = []
+    finite_valid_count = 0
+    no_return_count = 0
     for index, raw in enumerate(raw_ranges):
         if isinstance(raw, bool) or not isinstance(raw, (int, float)):
             continue
@@ -251,12 +253,29 @@ def summarize_laser_scan(message: dict[str, Any]) -> dict[str, Any]:
         ):
             angle = angle_min + index * angle_increment
             samples.append((angle, distance))
+            finite_valid_count += 1
+        elif (
+            scan_parameters_valid
+            and math.isinf(distance)
+            and distance > 0.0
+            and range_max is not None
+            and angle_min is not None
+            and angle_increment is not None
+        ):
+            # ROS lidars commonly encode "no obstacle within range" as +Inf. It is
+            # usable coverage for clearance, but remains distinct from a finite hit.
+            angle = angle_min + index * angle_increment
+            samples.append((angle, range_max))
+            no_return_count += 1
     distances = [distance for _angle, distance in samples]
     closest = min(samples, key=lambda item: item[1]) if samples else None
     return {
         "header": _header_summary(message),
         "sample_count": len(raw_ranges),
-        "valid_count": len(samples),
+        "valid_count": finite_valid_count,
+        "no_return_count": no_return_count,
+        "usable_count": len(samples),
+        "usable_ratio": len(samples) / len(raw_ranges) if raw_ranges else None,
         "invalid_count": len(raw_ranges) - len(samples),
         "parameters_valid": scan_parameters_valid,
         "range_min_m": range_min,

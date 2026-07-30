@@ -45,6 +45,34 @@ def test_roscli_samples_multiple_yaml_documents(monkeypatch: Any) -> None:
     assert [message["header"]["seq"] for message in messages] == [1, 2]
 
 
+def test_roscli_probe_reads_all_published_types_in_one_graph_command(monkeypatch: Any) -> None:
+    calls: list[list[str]] = []
+
+    def run(command: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        calls.append(command)
+        if command[0].endswith("rostopic"):
+            output = (
+                "Published topics:\n"
+                " * /odom [nav_msgs/Odometry] 1 publisher\n"
+                " * /scan [sensor_msgs/LaserScan] 1 publisher\n\n"
+                "Subscribed topics:\n * /cmd_vel [geometry_msgs/Twist] 1 subscriber\n"
+            )
+        else:
+            output = "/move_base\n"
+        return subprocess.CompletedProcess(command, 0, stdout=output, stderr="")
+
+    monkeypatch.setattr("shutil.which", lambda name: f"/opt/ros/melodic/bin/{name}")
+    monkeypatch.setattr("subprocess.run", run)
+    client = RosCliReadOnlyClient({"/odom": "nav_msgs/Odometry", "/scan": "sensor_msgs/LaserScan"})
+
+    graph = client.probe()
+
+    assert graph["topics"] == ["/odom", "/scan"]
+    assert graph["types"] == ["nav_msgs/Odometry", "sensor_msgs/LaserScan"]
+    assert graph["nodes"] == ["/move_base"]
+    assert [command[1:] for command in calls] == [["list", "-v"], ["list"]]
+
+
 def test_roscli_topic_info_parses_publishers_and_subscribers(monkeypatch: Any) -> None:
     def run(command: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
         output = (

@@ -22,6 +22,9 @@
 | Structured checks and stable error codes | `readiness.py`, `src/limo_ros_mcp/errors.py` |
 | Costmap and TF evidence | `server.py::patrol_readiness`, `readiness.py` |
 | Per-observation receive time and transport generation | `server.py`, `rosbridge.py`, `roscli.py` |
+| Single ROS graph preflight and shared batch transport | `server.py::_collect_summaries`, `roscli.py::probe` |
+| Multi-message TF edge aggregation | `server.py::_observe_with_client` |
+| YDLidar finite-hit/no-return/unsupported-slot distinction | `messages.py::summarize_laser_scan` |
 | Non-finite values fail closed | `messages.py`, canonical serializer, regression tests |
 | Raw binary/grid payload denial | `server.py`, contract tests |
 | Legacy REAL self-report blocked | `server.py::request_navigation` |
@@ -64,38 +67,44 @@ The MCP tool count remains 21. Optional `body_id` and `body_snapshot_hash` input
   PASS
 
 .venv/bin/pytest -q
-  PASS: 50 passed, 5 skipped
+  PASS: 52 passed, 5 skipped
 
 .venv/bin/pytest -q tests/test_stdio.py tests/test_server.py tests/test_readiness.py
   PASS: 16 passed
 
-.venv/bin/python -m build --outdir /tmp/limo-mcp-build-pr1-20260730
+.venv/bin/python -m build --outdir /tmp/limo-mcp-build-pr1-20260730-live
   PASS: sdist and wheel built
 
 clean venv install of limo_ros_mcp-0.3.0-py3-none-any.whl
   PASS: packaged policy loaded; MCP tool count = 21
 
 LIMO_LIVE_ROS=1 .venv/bin/pytest -vv -s tests/test_live_ros.py
-  NOT RUNNABLE: 5 failed because ROS master was unavailable
-  Structured probe error: "ERROR: Unable to communicate with master!"
-  ROS_MASTER_URI: http://localhost:11311
-  No roscore/rosmaster/limo/move_base/amcl process was running.
+  PASS: 5 passed in 27.42 s
+
+real MCP stdio call: limo_get_patrol_readiness(transport=roscli)
+  PASS: MCP protocol error=false; 11 available observations; 0 missing
+  Snapshot: sha256:f7db5d5441cf9777d002d4c638ec4a5e7d9155e2cf30846c6399acbeb8000413
+  State: BLOCKED
+  Blockers: LIMO_AMCL_STALE, LIMO_TF_CHAIN_BROKEN
+  Warnings: LIMO_BODY_SNAPSHOT_UNBOUND, LIMO_DIAGNOSTIC_WARN
+  Observation-window skew: 693.38 ms
 ```
 
-The live result is an infrastructure precondition failure, not hardware evidence and not counted as a passing test. It must be rerun when the operator starts the LIMO ROS graph.
+The first 2026-07-30 live attempt correctly failed while ROS master was unavailable. After the operator started LIMO bringup, Dabai, AMCL, map server, and move_base, the complete read-only suite passed. The final BLOCKED result is intentional: `/amcl_pose` remained over 1,000 seconds old, diagnostics reported `amcl: Standard deviation / Too large`, and the dynamic TF sample therefore had no `map→odom` edge. No localization initialization or motion was attempted by the Agent.
 
 ## Artifact hashes
 
 ```text
-sdist  sha256:2ef198cbe542182da97f62700de74a276108cde5fb567371ac284621234ba124
-wheel  sha256:07946e60e5b42f1119cae3dcf1c1e0ddd4b6e05eea33426813c2956a7d4ced58
-default readiness policy  sha256:0be89d067256ce30283e73d02b9883ca5f71cd642533a2d1a625505c3fabc3bd
+sdist  sha256:5f304634e4304fad2868793d7ab3d22e2948e67bb7e70a536b08629c24edc2ed
+wheel  sha256:35fe0fb94c04377db37493c92c6a49e15529b9cecafae6254a4e8a7bc9fc5a2f
+default readiness policy  sha256:92267704a0e4a199be8f3a1aca81ae465c4ede5cc68287c73db498d02c80c547
 ```
 
 ## Physical and Practice evidence
 
 - `hardware_actions_executed`: **0**
-- Read-only hardware observations on 2026-07-30: **0**, ROS master unavailable
+- Read-only hardware checks on 2026-07-30: **5 passed**
+- Final readiness snapshot observations: **11 available, 0 missing**
 - Practice IDs: none
 - Receipt IDs: none
 - REAL permits: none
@@ -110,7 +119,6 @@ Additional P0 follow-ups remain:
 - automatically detect `/use_sim_time` from an operator-owned observation source;
 - reuse a bounded rosbridge connection for the multi-topic readiness window;
 - split the remaining orchestration/control code out of `server.py` into `service.py` and transport packages;
-- rerun all five read-only live tests with the operator-started ROS graph and archive a real snapshot hash.
 
 ## Next gate
 

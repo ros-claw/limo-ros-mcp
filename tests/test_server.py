@@ -100,6 +100,65 @@ def test_message_sampling_uses_ros_header_rate(monkeypatch: pytest.MonkeyPatch) 
     assert result["estimated_rate_hz"] == pytest.approx(5.0)
 
 
+def test_readiness_collection_reuses_preflighted_transport_and_aggregates_tf(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeSnapshotClient:
+        transport_generation = "roscli-shared"
+
+        def __init__(self) -> None:
+            self.probe_count = 0
+
+        def probe(self) -> dict[str, Any]:
+            self.probe_count += 1
+            return {
+                "topics": ["/limo_status", "/odom", "/tf"],
+                "types": ["limo_base/LimoStatus", "nav_msgs/Odometry", "tf2_msgs/TFMessage"],
+                "nodes": [],
+            }
+
+        def subscribe_many(
+            self, topic: str, _message_type: str, *, count: int
+        ) -> list[dict[str, Any]]:
+            if topic == "/limo_status":
+                return [{"error_code": 0, "motion_mode": 0, "battery_voltage": 12.0}]
+            if topic == "/odom":
+                return [{"pose": {"pose": {}}, "twist": {"twist": {}}}]
+            assert topic == "/tf"
+            assert count == 5
+            return [
+                {
+                    "transforms": [
+                        {
+                            "header": {"frame_id": "map" if index % 2 == 0 else "odom"},
+                            "child_frame_id": "odom" if index % 2 == 0 else "base_link",
+                        }
+                    ]
+                }
+                for index in range(count)
+            ]
+
+    client = FakeSnapshotClient()
+    monkeypatch.setattr(
+        LimoMCPService,
+        "_client",
+        staticmethod(lambda *_args, **_kwargs: client),
+    )
+
+    result = LimoMCPService(gateway=object())._collect_summaries(
+        ["status", "odometry", "tf"],
+        endpoint="ws://127.0.0.1:9090",
+        timeout_sec=2.0,
+        transport="roscli",
+    )
+
+    assert result["ok"] is True
+    assert result["available_count"] == 3
+    assert result["transport_generation"] == "roscli-shared"
+    assert client.probe_count == 1
+    assert result["summaries"]["tf"]["transform_count"] == 2
+
+
 class FakeGateway:
     def __init__(self) -> None:
         self.calls: list[dict[str, Any]] = []

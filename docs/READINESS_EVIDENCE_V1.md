@@ -28,6 +28,10 @@ Each observation records the ROS header stamp when present, the local wall/monot
 
 The default policy covers status/error/motion mode/battery, odometry, IMU, laser validity and front clearance, AMCL freshness and covariance, move_base status, map metadata, both costmaps, diagnostics, and the map→odom→base TF chain. Every threshold includes a unit and is constrained by code-level safe bounds before the policy is accepted.
 
+The LIMO YDLidar publishes 450 range slots while unsupported angular slots are encoded as zero. The default usable-ratio threshold is therefore 0.40, validated against the observed ~0.44 stream. This quality check does not replace the independent front-clearance and freshness blockers.
+
+The Melodic LIMO status header trails local receipt by roughly 0.7 seconds on the validated robot, while the concurrent eleven-topic window takes up to about 1.5 seconds on its ARM CPU. The status freshness threshold is therefore 3.0 seconds; receive-time evidence and the separate 3.0-second observation-window coherence check remain mandatory.
+
 Failed `BLOCK` checks yield `BLOCKED`; failed `WARN` checks yield `DEGRADED` only when no blocker exists. Missing or invalid critical evidence never produces `READY`.
 
 ## Current boundary

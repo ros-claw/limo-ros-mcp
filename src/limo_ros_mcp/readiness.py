@@ -290,7 +290,7 @@ def build_readiness_evidence(
         "sec",
         ("laser_scan",),
     )
-    valid_count = finite_number(scan.get("valid_count"))
+    valid_count = finite_number(scan.get("usable_count", scan.get("valid_count")))
     sample_count = finite_number(scan.get("sample_count"))
     valid_ratio = (
         valid_count / sample_count
