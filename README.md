@@ -90,6 +90,11 @@ record the active TrajectoryPlannerROS tolerance, the pre-dispatch goal error, a
 map/odom displacement evidence so an immediate `Goal reached` is distinguishable
 from observed base motion.
 
+Version 0.8.8 closes the speaker verification loop. The daemon worker records a bounded
+one-second microphone baseline, captures the microphone concurrently with playback, and
+requires target-frequency level, baseline gain, and adjacent-frequency prominence before
+claiming acoustic output. PCM is analyzed only in memory and is never returned or retained.
+
 ## Read-only robot check
 
 An operator starts the existing LIMO stack. rosbridge is optional because `transport=auto` falls back to fixed read-only `rostopic`/`rosnode` commands:

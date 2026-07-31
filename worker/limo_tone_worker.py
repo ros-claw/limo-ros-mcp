@@ -31,6 +31,12 @@ MAX_AMPLITUDE = 0.9
 PULSE_REFERENCE_VOLUME = 65536
 ALLOWED_FREQUENCIES_HZ = (440, 660, 880)
 ALLOWED_USB_CARD_NAMES = ("USB PnP Audio Device", "USB PnP Sound Device")
+BASELINE_CAPTURE_SEC = 1
+LOOPBACK_CAPTURE_SEC = 2
+LOOPBACK_PREROLL_SEC = 0.15
+LOOPBACK_MIN_TARGET_DBFS = -45.0
+LOOPBACK_MIN_GAIN_DB = 10.0
+LOOPBACK_MIN_PROMINENCE_DB = 8.0
 PULSE_SINK_PATTERN = re.compile(
     r"^alsa_output\.usb-[A-Za-z0-9_.:-]*USB_PnP_(?:Audio|Sound)_Device"
     r"[A-Za-z0-9_.:-]*\.analog-stereo$"
@@ -296,8 +302,143 @@ def _play_tone(card, wav_bytes):
     return "alsa", device
 
 
+def _capture_command(card, duration_sec):
+    return [
+        "/usr/bin/arecord",
+        "-q",
+        "-D",
+        "plughw:%d,0" % card,
+        "-f",
+        "S16_LE",
+        "-r",
+        str(SAMPLE_RATE_HZ),
+        "-c",
+        "1",
+        "-t",
+        "raw",
+        "-d",
+        str(duration_sec),
+    ]
+
+
+def _capture_pcm(card, duration_sec):
+    code, stdout, stderr = _run(_capture_command(card, duration_sec))
+    if code != 0:
+        raise RequestError("microphone capture failed: %s" % stderr.strip())
+    if not stdout:
+        raise RequestError("microphone capture returned no samples")
+    return stdout
+
+
+def _capture_during_playback(card, wav_bytes):
+    recorder = subprocess.Popen(
+        _capture_command(card, LOOPBACK_CAPTURE_SEC),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    try:
+        time.sleep(LOOPBACK_PREROLL_SEC)
+        playback_backend, device = _play_tone(card, wav_bytes)
+        stdout, stderr = recorder.communicate()
+    except Exception:
+        if recorder.poll() is None:
+            recorder.terminate()
+            recorder.communicate()
+        raise
+    if recorder.returncode != 0:
+        raise RequestError("microphone loopback capture failed: %s" % stderr.strip())
+    if not stdout:
+        raise RequestError("microphone loopback capture returned no samples")
+    return playback_backend, device, stdout
+
+
+def _pcm_samples(payload):
+    sample_bytes = payload[: len(payload) - len(payload) % 2]
+    if not sample_bytes:
+        raise RequestError("microphone capture returned no complete samples")
+    return struct.unpack("<%dh" % (len(sample_bytes) // 2), sample_bytes)
+
+
+def _dbfs(amplitude):
+    return 20.0 * math.log10(max(float(amplitude) / 32768.0, 1e-12))
+
+
+def _frequency_amplitude(samples, frequency_hz):
+    count = len(samples)
+    if count < 1:
+        return 0.0
+    cosine = 0.0
+    sine = 0.0
+    scale = 2.0 * math.pi * frequency_hz / SAMPLE_RATE_HZ
+    for index, value in enumerate(samples):
+        angle = scale * index
+        cosine += value * math.cos(angle)
+        sine += value * math.sin(angle)
+    return 2.0 * math.sqrt(cosine * cosine + sine * sine) / count
+
+
+def _pcm_metrics(payload, frequency_hz):
+    samples = _pcm_samples(payload)
+    window_size = min(4096, len(samples))
+    step = max(1, window_size // 2)
+    starts = list(range(0, max(1, len(samples) - window_size + 1), step))
+    final_start = max(0, len(samples) - window_size)
+    if final_start not in starts:
+        starts.append(final_start)
+    best = None
+    for start in starts:
+        window = samples[start : start + window_size]
+        target = _frequency_amplitude(window, frequency_hz)
+        if best is None or target > best[0]:
+            left = _frequency_amplitude(window, frequency_hz - 80)
+            right = _frequency_amplitude(window, frequency_hz + 80)
+            rms = math.sqrt(sum(float(value) * value for value in window) / len(window))
+            peak = max(abs(value) for value in window)
+            best = (target, max(left, right), rms, peak, start)
+    target, adjacent, rms, peak, start = best
+    return {
+        "sample_count": len(samples),
+        "analysis_window_samples": window_size,
+        "analysis_window_start_sample": start,
+        "target_dbfs": round(_dbfs(target), 2),
+        "adjacent_dbfs": round(_dbfs(adjacent), 2),
+        "target_prominence_db": round(_dbfs(target) - _dbfs(adjacent), 2),
+        "rms_dbfs": round(_dbfs(rms), 2),
+        "peak_dbfs": round(_dbfs(peak), 2),
+    }
+
+
+def _loopback_evidence(baseline_pcm, observed_pcm, frequency_hz, card):
+    baseline = _pcm_metrics(baseline_pcm, frequency_hz)
+    observed = _pcm_metrics(observed_pcm, frequency_hz)
+    target_gain_db = round(observed["target_dbfs"] - baseline["target_dbfs"], 2)
+    detected = (
+        observed["target_dbfs"] >= LOOPBACK_MIN_TARGET_DBFS
+        and target_gain_db >= LOOPBACK_MIN_GAIN_DB
+        and observed["target_prominence_db"] >= LOOPBACK_MIN_PROMINENCE_DB
+    )
+    return {
+        "detected": detected,
+        "sensor": "onboard_usb_microphone",
+        "capture_device": "plughw:%d,0" % card,
+        "target_frequency_hz": frequency_hz,
+        "target_gain_db": target_gain_db,
+        "thresholds": {
+            "minimum_target_dbfs": LOOPBACK_MIN_TARGET_DBFS,
+            "minimum_gain_db": LOOPBACK_MIN_GAIN_DB,
+            "minimum_prominence_db": LOOPBACK_MIN_PROMINENCE_DB,
+        },
+        "baseline": baseline,
+        "during_playback": observed,
+        "audio_retained": False,
+        "audio_content_returned": False,
+        "privacy_note": "PCM was analyzed in memory and discarded.",
+    }
+
+
 def _run_audio(request):
     card = _usb_audio_card()
+    baseline_pcm = _capture_pcm(card, BASELINE_CAPTURE_SEC)
     wav_bytes, frame_count = _tone_wav(
         request["frequency_hz"], request["duration_sec"], request["volume_percent"]
     )
@@ -310,7 +451,7 @@ def _run_audio(request):
         reference_volumes = [PULSE_REFERENCE_VOLUME] * len(original_state["channel_volumes"])
         try:
             _set_pulse_sink_state(server, sink, reference_volumes, True)
-            playback_backend, device = _play_tone(card, wav_bytes)
+            playback_backend, device, observed_pcm = _capture_during_playback(card, wav_bytes)
         finally:
             _set_pulse_sink_state(
                 server,
@@ -328,7 +469,7 @@ def _run_audio(request):
         original_percent, original_unmuted = _speaker_state(card)
         try:
             _set_speaker_state(card, 100, True, mapped=True)
-            playback_backend, device = _play_tone(card, wav_bytes)
+            playback_backend, device, observed_pcm = _capture_during_playback(card, wav_bytes)
         finally:
             _set_speaker_state(card, original_percent, original_unmuted)
             restored = True
@@ -337,6 +478,7 @@ def _run_audio(request):
             "volume_percent": original_percent,
             "unmuted": original_unmuted,
         }
+    loopback = _loopback_evidence(baseline_pcm, observed_pcm, request["frequency_hz"], card)
     return {
         "protocol": PROTOCOL,
         "ok": True,
@@ -358,6 +500,8 @@ def _run_audio(request):
         "completed_wall_time": time.time(),
         "mixer_restored": restored,
         "original_output_state": original_output_state,
+        "acoustic_loopback": loopback,
+        "acoustic_loopback_detected": loopback["detected"],
     }
 
 

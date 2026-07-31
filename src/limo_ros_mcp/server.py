@@ -1072,6 +1072,7 @@ class LimoMCPService:
                 "kind": "speaker_tone",
                 "playback_required": True,
                 "mixer_restore_required": True,
+                "microphone_loopback_required": True,
             },
         }
 
@@ -1114,7 +1115,7 @@ class LimoMCPService:
                 body_snapshot_hash=body_snapshot_hash,
                 body_id="limo",
                 action_id=action_id,
-                required_evidence="DRIVER_CONFIRMED",
+                required_evidence="TASK_VERIFIED",
                 timeout_sec=10.0,
                 wait_timeout_sec=float(wait_timeout_sec),
             )
@@ -1149,11 +1150,14 @@ class LimoMCPService:
                 body_id="limo",
                 action_id=action_id,
                 deadline_at=deadline_at,
-                required_evidence="DRIVER_CONFIRMED",
+                required_evidence="TASK_VERIFIED",
                 timeout_sec=10.0,
                 display={
                     "title": "Play a short LIMO speaker tone",
-                    "summary": "Play one bounded synthesized tone and restore the mixer state.",
+                    "summary": (
+                        "Play one bounded synthesized tone, verify it through the onboard "
+                        "microphone, and restore the mixer state."
+                    ),
                     "tone": tone,
                     "physical_effect": "The robot speaker will emit a short audible tone.",
                 },
