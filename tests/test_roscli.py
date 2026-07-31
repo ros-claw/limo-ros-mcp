@@ -104,3 +104,29 @@ def test_each_roscli_client_has_a_distinct_transport_generation(monkeypatch: Any
 
     assert first.transport_generation.startswith("roscli-")
     assert first.transport_generation != second.transport_generation
+
+
+def test_roscli_resolves_only_fixed_readiness_transforms(monkeypatch: Any) -> None:
+    calls: list[list[str]] = []
+
+    def run(command: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        calls.append(command)
+        return subprocess.CompletedProcess(
+            command,
+            124,
+            stdout="At time 1.0\n- Translation: [0, 0, 0]\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr("shutil.which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr("subprocess.run", run)
+    client = RosCliReadOnlyClient({"/tf": "tf2_msgs/TFMessage"})
+
+    assert client.transform_available("map", "odom") is True
+    assert calls[0][-4:] == ["tf", "tf_echo", "map", "odom"]
+    try:
+        client.transform_available("map", "camera_link")
+    except ValueError as exc:
+        assert "immutable readiness allowlist" in str(exc)
+    else:
+        raise AssertionError("unexpected transform was not rejected")

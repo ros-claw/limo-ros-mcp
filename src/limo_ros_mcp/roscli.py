@@ -30,10 +30,14 @@ class RosCliReadOnlyClient:
         self._observed_topic_types: dict[str, str] = {}
         rostopic = shutil.which("rostopic")
         rosnode = shutil.which("rosnode")
-        if not rostopic or not rosnode:
+        rosrun = shutil.which("rosrun")
+        timeout_command = shutil.which("timeout")
+        if not rostopic or not rosnode or not rosrun or not timeout_command:
             raise RuntimeError("ROS 1 rostopic/rosnode commands are unavailable")
         self.rostopic: str = rostopic
         self.rosnode: str = rosnode
+        self.rosrun: str = rosrun
+        self.timeout_command: str = timeout_command
 
     def _run(self, command: list[str]) -> str:
         result = subprocess.run(
@@ -140,3 +144,35 @@ class RosCliReadOnlyClient:
 
     def subscribe_once(self, topic: str, message_type: str) -> dict[str, Any]:
         return self.subscribe_many(topic, message_type, count=1)[0]
+
+    def transform_available(self, parent_frame: str, child_frame: str) -> bool:
+        """Resolve one fixed TF edge without publishing or exposing an arbitrary command."""
+
+        allowed = {("map", "odom"), ("odom", "base_link")}
+        if (parent_frame, child_frame) not in allowed:
+            raise ValueError("transform is not present in the immutable readiness allowlist")
+        timeout_sec = max(0.2, min(self.timeout_sec, 2.0))
+        command = [
+            self.timeout_command,
+            "--signal=TERM",
+            f"{timeout_sec:g}",
+            self.rosrun,
+            "tf",
+            "tf_echo",
+            parent_frame,
+            child_frame,
+        ]
+        result = subprocess.run(
+            command,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=timeout_sec + 1.0,
+        )
+        output = result.stdout
+        if len(output.encode("utf-8")) > self.max_output_bytes:
+            raise RuntimeError("ROS CLI output exceeds the configured size limit")
+        if result.returncode not in {0, 124}:
+            error = result.stderr.strip() or output.strip() or "tf_echo failed"
+            raise RuntimeError(error)
+        return "At time" in output and "Failure" not in output

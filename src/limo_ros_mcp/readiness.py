@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import re
 import time
 import uuid
 from collections import deque
@@ -60,6 +61,8 @@ _CHECK_ERROR_CODES = {
     "TF_MAP_ODOM_BASE": LIMO_TF_CHAIN_BROKEN,
     "BODY_SNAPSHOT_BOUND": "LIMO_BODY_SNAPSHOT_UNBOUND",
 }
+
+_UNTAGGED_SHA256_RE = re.compile(r"[0-9a-f]{64}")
 
 
 def _mapping(value: Any) -> dict[str, Any]:
@@ -433,7 +436,8 @@ def build_readiness_evidence(
     )
     add(
         "BODY_SNAPSHOT_BOUND",
-        body_snapshot_hash.startswith("sha256:"),
+        body_snapshot_hash.startswith("sha256:")
+        or _UNTAGGED_SHA256_RE.fullmatch(body_snapshot_hash) is not None,
         bool(body_snapshot_hash),
         "==",
         True,

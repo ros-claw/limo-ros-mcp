@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -187,6 +188,35 @@ class FakeGateway:
     async def request_initial_pose(self, **kwargs: Any) -> dict[str, Any]:
         return await self.request_navigation(**kwargs)
 
+    def prepare_operator_action(self, **kwargs: Any) -> Any:
+        self.calls.append({"operation": "prepare", **kwargs})
+        return SimpleNamespace(
+            approval_request={
+                "schema_version": "rosclaw.operator_confirmation.v1",
+                "action_id": kwargs["action_id"],
+                "action_intent_hash": "sha256:exact-action",
+                "body_id": "limo",
+                "capability_id": kwargs["capability_id"],
+                "execution_mode": "REAL",
+                "deadline_at": kwargs["deadline_at"],
+                "display": kwargs["display"],
+            }
+        )
+
+    async def confirm_operator_action(self, prepared: Any, **kwargs: Any) -> dict[str, Any]:
+        self.calls.append({"operation": "confirm", "prepared": prepared, **kwargs})
+        return {
+            "ok": True,
+            "state": "QUEUED",
+            "action_id": prepared.approval_request["action_id"],
+            "operator_confirmation": {
+                "accepted": True,
+                "permit_injected": True,
+                "permit_exposed": False,
+            },
+            "command_dispatched": False,
+        }
+
 
 class FakeGoalValidator:
     def validate(self, **kwargs: Any) -> dict[str, Any]:
@@ -284,6 +314,81 @@ async def test_request_initial_pose_submits_exact_daemon_contract() -> None:
         0.0685,
     ]
     assert call["arguments"]["expected_effect"]["map_to_odom_required"] is True
+
+
+class FakeElicitationContext:
+    request_id = "mcp-request-1"
+
+    def __init__(self, *, accepted: bool) -> None:
+        self.accepted = accepted
+        self.messages: list[str] = []
+
+    async def elicit(self, *, message: str, schema: Any) -> Any:
+        self.messages.append(message)
+        return SimpleNamespace(
+            action="accept" if self.accepted else "decline",
+            data=SimpleNamespace(confirm=self.accepted) if self.accepted else None,
+        )
+
+
+@pytest.mark.asyncio
+async def test_real_initial_pose_uses_elicitation_and_hides_permit_input() -> None:
+    gateway = FakeGateway()
+    server = build_mcp_server(LimoMCPService(gateway=gateway, goal_validator=FakeGoalValidator()))
+    tools = {tool.name: tool for tool in await server.list_tools()}
+    schema = tools["limo_request_initial_pose"].inputSchema
+    assert "approval_id" not in schema["properties"]
+    assert "principal_id" not in schema["properties"]
+
+    context = FakeElicitationContext(accepted=True)
+    result = await server._tool_manager.call_tool(
+        "limo_request_initial_pose",
+        {
+            "x": 0.75,
+            "y": -1.25,
+            "yaw": 0.35,
+            "body_snapshot_hash": "sha256:test-body-snapshot",
+            "execution_mode": "REAL",
+            "action_id": "action-interactive-initial-pose",
+            "deadline_at": "2030-01-02T03:04:05Z",
+            "wait_timeout_sec": 0.0,
+        },
+        context=context,
+        convert_result=False,
+    )
+
+    assert result["state"] == "QUEUED"
+    assert result["operator_confirmation"]["permit_injected"] is True
+    assert result["operator_confirmation"]["permit_exposed"] is False
+    assert "permit" not in str(result).lower().replace("permit_injected", "").replace(
+        "permit_exposed", ""
+    )
+    assert context.messages and "Target:" in context.messages[0]
+    assert [call["operation"] for call in gateway.calls] == ["prepare", "confirm"]
+
+
+@pytest.mark.asyncio
+async def test_declined_initial_pose_confirmation_never_submits() -> None:
+    gateway = FakeGateway()
+    server = build_mcp_server(LimoMCPService(gateway=gateway, goal_validator=FakeGoalValidator()))
+    result = await server._tool_manager.call_tool(
+        "limo_request_initial_pose",
+        {
+            "x": 0.75,
+            "y": -1.25,
+            "yaw": 0.35,
+            "body_snapshot_hash": "sha256:test-body-snapshot",
+            "execution_mode": "REAL",
+            "action_id": "action-declined-initial-pose",
+            "deadline_at": "2030-01-02T03:04:05Z",
+        },
+        context=FakeElicitationContext(accepted=False),
+        convert_result=False,
+    )
+
+    assert result["error_code"] == "OPERATOR_CONFIRMATION_DECLINED"
+    assert result["command_dispatched"] is False
+    assert [call["operation"] for call in gateway.calls] == ["prepare"]
 
 
 @pytest.mark.asyncio

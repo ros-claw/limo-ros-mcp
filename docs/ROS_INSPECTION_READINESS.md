@@ -5,7 +5,7 @@ are a point-in-time observation, not a permanent robot claim or proof of motion.
 
 ## Implemented interface
 
-- 21 MCP tools and 23 named ROS observation contracts.
+- 22 MCP tools and 23 named ROS observation contracts.
 - ROS graph discovery and per-topic type/publisher/subscriber inspection.
 - Bounded 1-10 message sampling with ROS-header rate estimation.
 - Compact parsers for LIMO status, odometry, IMU, LaserScan, AMCL pose, move_base status,
@@ -14,6 +14,8 @@ are a point-in-time observation, not a permanent robot claim or proof of motion.
   map metadata, and diagnostics.
 - High-level navigation remains connected to the ROSClaw daemon path; no Agent-side ROS
   publisher was added.
+- REAL initial-pose setup uses MCP elicitation and internal one-shot authorization injection;
+  permit identifiers are not part of the Agent-facing tool schema or result.
 
 ## Reproducible checks
 
@@ -59,6 +61,27 @@ snapshot read all eight requested observation groups without publishing a comman
 The corrected patrol decision is therefore `BLOCKED`, with `localized_pose_stale` as a blocker
 and `diagnostics_non_nominal` as a warning. This is intentional: topic presence alone is not
 enough to declare localization ready.
+
+## 2026-07-31 live snapshot
+
+The graph contained 16 nodes and 66 topics. All five opt-in live tests passed. The readiness
+collector read all 11 requested observations, accepted the installed ROSClaw Body digest in its
+native untagged form, and resolved the complete `map -> odom -> base_link` chain with bounded
+read-only TF checks. The earlier TF-chain failure was a sampling false negative and is fixed.
+
+| Evidence | Observed result |
+| --- | --- |
+| LIMO status | `error_code=0`, four-wheel differential mode, battery 12.2 V (dynamic) |
+| Odometry | Zero linear and angular velocity at the observation instant |
+| Lidar | Front 4.77 m, left 2.73 m, right 2.50 m minimum clearance (dynamic) |
+| TF | `map -> odom` and `odom -> base_link` both resolved |
+| AMCL | Still stale; the patrol decision remains `BLOCKED` |
+| Diagnostics | One WARN: `amcl: Standard deviation` / `Too large` |
+
+A SHADOW `limo.set_initial_pose` request for `(0.75, -1.25, 0.35 rad)` completed with a
+`TASK_VERIFIED` receipt and `hardware_dispatched=false`. An MCP protocol test also rendered the
+new REAL confirmation form, declined it, and verified that no daemon Session, Permit, or Action
+was created.
 
 ## Next patrol experiment sequence
 

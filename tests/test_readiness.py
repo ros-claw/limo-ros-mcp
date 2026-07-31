@@ -63,6 +63,20 @@ def test_complete_evidence_is_ready_hash_sealed_and_stably_sorted() -> None:
     )
 
 
+def test_untagged_rosclaw_body_digest_is_treated_as_bound() -> None:
+    body_hash = "a" * 64
+    evidence = build_readiness_evidence(
+        _records(),
+        body_snapshot_hash=body_hash,
+        now_wall=100.0,
+        now_monotonic=50.0,
+    )
+
+    check = next(item for item in evidence["checks"] if item["check_id"] == "BODY_SNAPSHOT_BOUND")
+    assert check["passed"] is True
+    assert evidence["body_snapshot_hash"] == body_hash
+
+
 def test_stale_amcl_and_missing_receive_time_fail_closed() -> None:
     records = _records()
     records["localized_pose"]["summary"]["header"] = {"age_sec": 30.0}
