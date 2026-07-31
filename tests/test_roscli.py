@@ -18,6 +18,10 @@ def test_roscli_observation_uses_only_type_and_echo(monkeypatch: Any) -> None:
         output = "sensor_msgs/Imu\n" if command[1] == "type" else "orientation:\n  w: 1.0\n---\n"
         return subprocess.CompletedProcess(command, 0, stdout=output, stderr="")
 
+    monkeypatch.setattr(
+        "limo_ros_mcp.roscli.Path.is_dir",
+        lambda path: str(path).startswith("/opt/ros/melodic"),
+    )
     monkeypatch.setattr("shutil.which", lambda name: f"/opt/ros/melodic/bin/{name}")
     monkeypatch.setattr("subprocess.run", run)
     client = RosCliReadOnlyClient({"/imu": "sensor_msgs/Imu"})
@@ -49,6 +53,10 @@ def test_roscli_builds_melodic_environment_without_inherited_ros_vars(
         "ROS_ETC_DIR",
     ):
         monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(
+        "limo_ros_mcp.roscli.Path.is_dir",
+        lambda path: str(path).startswith("/opt/ros/melodic"),
+    )
 
     environment = build_ros1_cli_environment()
 
