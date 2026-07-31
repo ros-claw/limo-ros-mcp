@@ -7,6 +7,7 @@ import json
 import os
 import subprocess
 import sys
+from io import StringIO
 from pathlib import Path
 from types import ModuleType
 
@@ -97,6 +98,19 @@ def test_tone_worker_rejects_unbounded_parameters(override: dict[str, object]) -
 
     with pytest.raises(TONE.RequestError):
         TONE.validate_request(request)
+
+
+@pytest.mark.parametrize("card_name", ["USB PnP Audio Device", "USB PnP Sound Device"])
+def test_tone_worker_accepts_known_usb_audio_card_names(monkeypatch, card_name: str) -> None:
+    inventory = (
+        " 0 [tegrahda       ]: tegra-hda - tegra-hda\n"
+        "                      built-in audio\n"
+        f" 2 [Device         ]: USB-Audio - {card_name}\n"
+        f"                      {card_name} at usb-test\n"
+    )
+    monkeypatch.setattr("builtins.open", lambda *_args, **_kwargs: StringIO(inventory))
+
+    assert TONE._usb_audio_card() == 2
 
 
 def test_navigation_worker_rejects_non_map_and_unbounded_timeout() -> None:
