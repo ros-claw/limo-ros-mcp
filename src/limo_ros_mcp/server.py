@@ -51,6 +51,19 @@ def _control_error(operation: str, exc: Exception) -> dict[str, Any]:
     }
 
 
+def _client_supports_form_elicitation(ctx: Any) -> bool:
+    """Return whether the connected MCP client advertised form elicitation."""
+
+    try:
+        session = ctx.request_context.session
+    except (AttributeError, ValueError):
+        return False
+    client_params = getattr(session, "client_params", None)
+    capabilities = getattr(client_params, "capabilities", None)
+    elicitation = getattr(capabilities, "elicitation", None)
+    return getattr(elicitation, "form", None) is not None
+
+
 class LimoMCPService:
     """Implementation behind the LIMO MCP tools, injectable for tests."""
 
@@ -1373,6 +1386,19 @@ def build_mcp_server(service: LimoMCPService | None = None) -> FastMCP:
                     "prepare_initial_pose_confirmation",
                     RuntimeError("ROSClaw returned no operator confirmation request"),
                 )
+            if not _client_supports_form_elicitation(ctx):
+                return {
+                    **_control_error(
+                        "operator_confirmation",
+                        RuntimeError("MCP client does not advertise form elicitation"),
+                    ),
+                    "error_code": "MCP_ELICITATION_UNAVAILABLE",
+                    "approval_request": approval_request,
+                    "message": (
+                        "This MCP client cannot render the required operator confirmation. "
+                        "Use a client with MCP form elicitation enabled and retry."
+                    ),
+                }
             display = approval_request.get("display", {})
             target = display.get("target_pose", {}) if isinstance(display, dict) else {}
             message = (
