@@ -356,7 +356,8 @@ def _service_with_readiness(
         {
             "schema_version": "limo.readiness.v1",
             "state": state,
-            "ready": state == "READY",
+            "ready": state != "BLOCKED",
+            "blockers": ["test-blocker"] if state == "BLOCKED" else [],
             "body_snapshot_hash": body_hash,
             "expires_wall_time": time.time() + expires_in,
             "expires_at": "test",
@@ -569,6 +570,27 @@ async def test_request_navigation_submits_shadow_to_rosclawd_boundary() -> None:
     assert call["arguments"]["expected_effect"]["stop_required"] is True
     assert "preconditions" not in call["arguments"]
     assert result["navigation_contract"]["decision"] == "ALLOW"
+
+
+@pytest.mark.asyncio
+async def test_request_navigation_accepts_degraded_snapshot_without_blockers() -> None:
+    gateway = FakeGateway()
+    service, readiness_hash = _service_with_readiness(gateway, state="DEGRADED")
+
+    result = await service.request_navigation(
+        x=0.3,
+        y=0.0,
+        yaw=0.0,
+        frame_id="map",
+        body_snapshot_hash="sha256:test-body-snapshot",
+        readiness_snapshot_hash=readiness_hash,
+        execution_mode="SHADOW",
+        action_id="action-limo-degraded-shadow",
+        wait_timeout_sec=0.0,
+    )
+
+    assert result["state"] == "QUEUED"
+    assert gateway.calls[0]["arguments"]["readiness_snapshot_hash"] == readiness_hash
 
 
 @pytest.mark.asyncio

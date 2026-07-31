@@ -487,7 +487,7 @@ def build_readiness_evidence(
         "observation_failures": failure_names,
         "checks": checks,
         "state": state,
-        "ready": state == "READY",
+        "ready": not blockers,
         "blockers": blockers,
         "warnings": warnings,
         "policy_id": selected_policy.policy_id,
