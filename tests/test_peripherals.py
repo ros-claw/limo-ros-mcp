@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import array
+import subprocess
 from pathlib import Path
+from typing import Any
 
 import pytest
 
-from limo_ros_mcp.peripherals import PeripheralInspector
+from limo_ros_mcp.peripherals import PeripheralInspector, _default_text_runner
 
 
 def _write(path: Path, value: str) -> None:
@@ -182,3 +184,26 @@ def test_dabai_device_state_uses_getter_only_service_allowlist(tmp_path: Path) -
     assert result["device"]["ldp_enabled"] is False
     assert all("/get_" in service for service in result["read_only_services"])
     assert result["command_dispatched"] is False
+
+
+def test_default_text_runner_supplies_ros1_cli_environment(monkeypatch: Any) -> None:
+    captured: dict[str, Any] = {}
+
+    def run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        captured.update(kwargs)
+        return subprocess.CompletedProcess(command, 0, stdout="success: true\n", stderr="")
+
+    monkeypatch.setattr(
+        "limo_ros_mcp.roscli.Path.is_dir",
+        lambda path: str(path).startswith("/opt/ros/melodic"),
+    )
+    monkeypatch.setattr("subprocess.run", run)
+
+    code, _stdout, _stderr = _default_text_runner(
+        ["rosservice", "call", "/camera/get_serial"],
+        5.0,
+    )
+
+    assert code == 0
+    assert captured["env"]["ROS_PYTHON_VERSION"] == "2"
+    assert "/opt/ros/melodic/lib/python2.7/dist-packages" in captured["env"]["PYTHONPATH"]
