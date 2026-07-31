@@ -692,7 +692,7 @@ class LimoMCPService:
     def patrol_readiness(
         self,
         endpoint: str = "ws://127.0.0.1:9090",
-        timeout_sec: float = 5.0,
+        timeout_sec: float = 10.0,
         transport: str = "auto",
         body_id: str = "limo",
         body_snapshot_hash: str = "",
@@ -1231,7 +1231,7 @@ def build_mcp_server(service: LimoMCPService | None = None) -> FastMCP:
     )
     async def limo_get_patrol_readiness(
         endpoint: str = "ws://127.0.0.1:9090",
-        timeout_sec: float = 5.0,
+        timeout_sec: float = 10.0,
         transport: str = "auto",
         body_id: str = "limo",
         body_snapshot_hash: str = "",
