@@ -82,6 +82,14 @@ approvals_reviewer = "user"
 
 Read-only, SHADOW, and MCP protocol tests do not require a new Codex session. Whether an already-running client hot-reloads a changed tool schema depends on the client version.
 
+Version 0.8.7 corrects physical-effect evidence from the first LIMO lab run. Speaker
+volume now uses one PCM amplitude control against a temporary reference output gain,
+instead of multiplying a very low PulseAudio/ALSA gain by another waveform attenuation;
+the previous output state is restored after playback. Navigation receipts
+record the active TrajectoryPlannerROS tolerance, the pre-dispatch goal error, and
+map/odom displacement evidence so an immediate `Goal reached` is distinguishable
+from observed base motion.
+
 ## Read-only robot check
 
 An operator starts the existing LIMO stack. rosbridge is optional because `transport=auto` falls back to fixed read-only `rostopic`/`rosnode` commands:

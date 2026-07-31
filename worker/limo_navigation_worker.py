@@ -14,6 +14,8 @@ import time
 PROTOCOL = "rosclaw.limo.worker.v1"
 SCHEMA = "limo.navigation.v2"
 MAX_REQUEST_BYTES = 65536
+MIN_OBSERVED_TRANSLATION_M = 0.02
+MIN_OBSERVED_ROTATION_RAD = 0.03
 try:
     STRING_TYPES = (basestring,)  # type: ignore[name-defined]  # noqa: F821
 except NameError:
@@ -143,11 +145,49 @@ def _pose_from_transform(translation, rotation):
     }
 
 
+def _pose_from_odometry(message):
+    return {
+        "frame_id": message.header.frame_id,
+        "x": message.pose.pose.position.x,
+        "y": message.pose.pose.position.y,
+        "yaw": _yaw_from_quaternion(message.pose.pose.orientation),
+    }
+
+
 def _pose_error(observed, target):
     position_error = math.hypot(observed["x"] - target["x"], observed["y"] - target["y"])
     yaw_delta = observed["yaw"] - target["yaw"]
     yaw_error = abs(math.atan2(math.sin(yaw_delta), math.cos(yaw_delta)))
     return position_error, yaw_error
+
+
+def _pose_delta(before, after):
+    translation = math.hypot(after["x"] - before["x"], after["y"] - before["y"])
+    yaw_delta = after["yaw"] - before["yaw"]
+    rotation = abs(math.atan2(math.sin(yaw_delta), math.cos(yaw_delta)))
+    return translation, rotation
+
+
+def _active_goal_tolerance(rospy, requested):
+    xy = rospy.get_param("/move_base/TrajectoryPlannerROS/xy_goal_tolerance", requested["xy_m"])
+    yaw = rospy.get_param(
+        "/move_base/TrajectoryPlannerROS/yaw_goal_tolerance", requested["yaw_rad"]
+    )
+    try:
+        xy = float(xy)
+        yaw = float(yaw)
+    except (TypeError, ValueError):
+        raise RequestError("active TrajectoryPlannerROS goal tolerance is malformed")
+    if (
+        math.isnan(xy)
+        or math.isinf(xy)
+        or math.isnan(yaw)
+        or math.isinf(yaw)
+        or xy <= 0.0
+        or yaw <= 0.0
+    ):
+        raise RequestError("active TrajectoryPlannerROS goal tolerance is invalid")
+    return {"xy_m": xy, "yaw_rad": yaw}
 
 
 def _wait_for_stopped_odometry(rospy, odometry_type, timeout_sec):
@@ -219,6 +259,14 @@ def _run_ros(request):
     map_to_base_before = listener.lookupTransform("map", "base_link", rospy.Time(0))
 
     pose = request["target_pose"]
+    map_pose_before = _pose_from_transform(map_to_base_before[0], map_to_base_before[1])
+    odom_pose_before = _pose_from_odometry(odom_before)
+    initial_position_error, initial_yaw_error = _pose_error(map_pose_before, pose)
+    active_tolerance = _active_goal_tolerance(rospy, request["goal_tolerance"])
+    goal_already_satisfied = (
+        initial_position_error <= active_tolerance["xy_m"]
+        and initial_yaw_error <= active_tolerance["yaw_rad"]
+    )
     goal = MoveBaseGoal()
     goal.target_pose.header.stamp = rospy.Time.now()
     goal.target_pose.header.frame_id = "map"
@@ -241,7 +289,7 @@ def _run_ros(request):
         _wait_for_stopped_odometry(rospy, Odometry, request["verification_timeout_sec"])
         raise RequestError("move_base finished without SUCCEEDED: %s" % terminal_text)
 
-    _odom_after, stopped_linear, stopped_angular = _wait_for_stopped_odometry(
+    odom_after, stopped_linear, stopped_angular = _wait_for_stopped_odometry(
         rospy, Odometry, request["verification_timeout_sec"]
     )
     amcl_after = _wait_for_post_dispatch_amcl(
@@ -258,6 +306,14 @@ def _run_ros(request):
         observed = _pose_from_transform(map_to_base_after[0], map_to_base_after[1])
         observed_source = "tf_map_to_base"
     position_error, yaw_error = _pose_error(observed, pose)
+    map_translation, map_rotation = _pose_delta(
+        map_pose_before, _pose_from_transform(map_to_base_after[0], map_to_base_after[1])
+    )
+    odom_translation, odom_rotation = _pose_delta(odom_pose_before, _pose_from_odometry(odom_after))
+    motion_observed = (
+        odom_translation >= MIN_OBSERVED_TRANSLATION_M or odom_rotation >= MIN_OBSERVED_ROTATION_RAD
+    )
+    movement_expected = not goal_already_satisfied
     tolerance = request["goal_tolerance"]
     if observed["frame_id"] != "map":
         raise RequestError("post-navigation final pose is not in map frame")
@@ -289,6 +345,12 @@ def _run_ros(request):
                 "translation": list(map_to_base_before[0]),
                 "rotation": list(map_to_base_before[1]),
             },
+            "initial_goal_error": {
+                "position_m": initial_position_error,
+                "yaw_rad": initial_yaw_error,
+            },
+            "active_goal_tolerance": active_tolerance,
+            "goal_already_satisfied": goal_already_satisfied,
         },
         "observed_final_pose": observed,
         "observed_final_pose_source": observed_source,
@@ -302,6 +364,17 @@ def _run_ros(request):
         "map_to_base_after": {
             "translation": list(map_to_base_after[0]),
             "rotation": list(map_to_base_after[1]),
+        },
+        "motion_evidence": {
+            "movement_expected": movement_expected,
+            "motion_observed": motion_observed,
+            "odom_translation_m": odom_translation,
+            "odom_rotation_rad": odom_rotation,
+            "map_translation_m": map_translation,
+            "map_rotation_rad": map_rotation,
+            "translation_threshold_m": MIN_OBSERVED_TRANSLATION_M,
+            "rotation_threshold_rad": MIN_OBSERVED_ROTATION_RAD,
+            "physical_motion_independently_observed": False,
         },
     }
 
