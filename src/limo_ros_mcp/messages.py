@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import re
 import time
 from typing import Any
 
@@ -24,6 +25,7 @@ GOAL_STATUS_NAMES = {
 }
 
 DIAGNOSTIC_LEVEL_NAMES = {0: "OK", 1: "WARN", 2: "ERROR", 3: "STALE"}
+ARRAY_PLACEHOLDER_RE = re.compile(r"^<array type: [^,>]+, length: (\d+)>$")
 
 
 def _mapping(value: Any) -> dict[str, Any]:
@@ -425,7 +427,18 @@ def summarize_tf(message: dict[str, Any]) -> dict[str, Any]:
 
 def summarize_binary_sensor(message: dict[str, Any]) -> dict[str, Any]:
     data = message.get("data")
-    data_length = len(data) if isinstance(data, (str, bytes, list)) else 0
+    data_placeholder = ARRAY_PLACEHOLDER_RE.fullmatch(data) if isinstance(data, str) else None
+    data_length = (
+        int(data_placeholder.group(1))
+        if data_placeholder is not None
+        else len(data)
+        if isinstance(data, (str, bytes, list))
+        else 0
+    )
+    fields_value = message.get("fields")
+    fields_placeholder = (
+        ARRAY_PLACEHOLDER_RE.fullmatch(fields_value) if isinstance(fields_value, str) else None
+    )
     fields = [str(_mapping(item).get("name", "")) for item in _list(message.get("fields"))]
     return {
         "header": _header_summary(message),
@@ -437,7 +450,11 @@ def summarize_binary_sensor(message: dict[str, Any]) -> dict[str, Any]:
         "row_step": message.get("row_step"),
         "is_dense": message.get("is_dense"),
         "fields": fields,
+        "field_count": (
+            int(fields_placeholder.group(1)) if fields_placeholder is not None else len(fields)
+        ),
         "data_length": data_length,
+        "data_truncated": data_placeholder is not None,
     }
 
 

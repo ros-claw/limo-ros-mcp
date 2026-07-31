@@ -6,6 +6,7 @@ import math
 
 from limo_ros_mcp.messages import (
     evaluate_patrol_readiness,
+    summarize_binary_sensor,
     summarize_diagnostics,
     summarize_goal_status,
     summarize_laser_scan,
@@ -14,6 +15,24 @@ from limo_ros_mcp.messages import (
     summarize_path,
     summarize_status,
 )
+
+
+def test_binary_sensor_summary_decodes_roscli_noarr_lengths() -> None:
+    summary = summarize_binary_sensor(
+        {
+            "height": 400,
+            "width": 640,
+            "point_step": 16,
+            "row_step": 10240,
+            "fields": "<array type: sensor_msgs/PointField, length: 3>",
+            "data": "<array type: uint8, length: 4096000>",
+        }
+    )
+
+    assert summary["field_count"] == 3
+    assert summary["fields"] == []
+    assert summary["data_length"] == 4_096_000
+    assert summary["data_truncated"] is True
 
 
 def test_status_decodes_motion_mode_and_driver_error_bits() -> None:
