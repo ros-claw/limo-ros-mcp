@@ -17,6 +17,8 @@ from typing import Any
 
 import yaml
 
+from limo_ros_mcp.roscli import build_ros1_cli_environment
+
 TextRunner = Callable[[list[str], float], tuple[int, str, str]]
 BinaryRunner = Callable[[list[str], float], tuple[int, bytes, str]]
 
@@ -132,6 +134,7 @@ def _default_text_runner(command: list[str], timeout_sec: float) -> tuple[int, s
         text=True,
         check=False,
         timeout=timeout_sec,
+        env=build_ros1_cli_environment(),
     )
     return completed.returncode, completed.stdout, completed.stderr
 
