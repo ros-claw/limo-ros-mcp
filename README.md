@@ -68,7 +68,14 @@ codex mcp add rosclaw-limo \
   -- /absolute/path/to/limo-ros-mcp/.venv/bin/python -m limo_ros_mcp.server
 ```
 
-`codex mcp list` confirms the configuration. Start a new Codex session after adding the server so its tools are discovered.
+`codex mcp list` confirms the configuration. After initially adding the server or changing its tool schema, let Codex rediscover the tools. REAL initial-pose execution uses MCP elicitation in the same tool call; the permit is injected internally and never appears as a tool input or result. Configure Codex to surface those prompts to the user:
+
+```toml
+approval_policy = { granular = { mcp_elicitations = true } }
+approvals_reviewer = "user"
+```
+
+Read-only, SHADOW, and MCP protocol tests do not require a new Codex session. Whether an already-running client hot-reloads a changed tool schema depends on the client version.
 
 ## Read-only robot check
 

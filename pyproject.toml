@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "limo-ros-mcp"
-version = "0.5.2"
+version = "0.6.0"
 description = "Inspection-focused MCP server for the AgileX LIMO ROS 1 platform"
 readme = "README.md"
 license = {text = "MIT"}
@@ -22,6 +22,7 @@ classifiers = [
 ]
 dependencies = [
   "mcp>=1.0.0,<2.0.0",
+  "pydantic>=2.0.0",
   "pyyaml>=6.0.0",
   "websocket-client>=1.0.0",
 ]

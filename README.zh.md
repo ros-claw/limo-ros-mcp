@@ -16,6 +16,7 @@ AgileX LIMO ROS 1 的独立巡检 MCP 服务。它把 `limo_ros` 的底盘、激
 - Navigation Contract v2 将请求绑定到同一 MCP 进程生成且未过期的 readiness snapshot，并要求 body snapshot 与 readiness 中使用的完全一致。
 - 目标校验覆盖运维侧 route policy、地图 YAML/PGM 哈希、map 坐标系、地图边界、地理围栏、禁行区、占用栅格、净空、航向和容差。
 - REAL 必须具备 daemon-owned 可信 preflight、守护进程签发的许可、已验证执行器以及最终执行回执。
+- `limo_request_initial_pose(execution_mode="REAL")` 会在同一次 MCP 调用里显示精确动作确认；接受后 permit 由 ROSClaw 内部注入，Agent 不再填写或看到 permit ID。
 - `limo_get_patrol_readiness` 返回带 SHA-256 封印的 `limo.readiness.v1`：默认 5 秒有效期，包含 policy hash、观测接收时间、稳定检查项、blocker 与 warning。
 - 调用者自报的 readiness 布尔值已经删除。当前只有通过 v2 校验的 SHADOW 请求能进入 gateway；daemon-owned preflight 和执行器完成前，REAL 一律 fail closed。
 
@@ -44,7 +45,16 @@ codex mcp add rosclaw-limo \
 codex mcp list
 ```
 
-添加后新开 Codex 会话，让客户端重新发现工具。
+首次添加服务器或工具 schema 变化后，需要让 Codex 重新发现工具。REAL
+确认还要求 Codex 允许 MCP elicitation，并由用户本人审核，而不是自动审核：
+
+```toml
+approval_policy = { granular = { mcp_elicitations = true } }
+approvals_reviewer = "user"
+```
+
+普通只读、SHADOW 和 MCP 协议测试不需要新开 Codex 会话；已运行会话是否会
+热更新工具 schema 取决于客户端版本。
 
 操作员启动 ROS 栈后，可运行只读真机集成测试：
 

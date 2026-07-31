@@ -5,10 +5,18 @@ ROSClaw control plane. The MCP process performs map, geofence, occupancy, frame,
 and finite-number validation, then sends a bounded action envelope to
 `rosclawd`. It never imports `rospy` and never publishes a ROS topic.
 
-For REAL execution, the tool also accepts the exact operator-proposal
-`deadline_at` ISO 8601 timestamp. Passing it back with the daemon-issued
-`approval_id` keeps the submitted action intent identical to its one-shot
-permit.
+For REAL execution, the tool prepares one exact proposal and asks the MCP host
+to render an operator confirmation form. The card includes the robot, action,
+target, physical effect, deadline, and action-intent hash. If the operator
+accepts, ROSClaw exchanges that exact proposal for a one-shot daemon permit,
+injects it internally, and submits the action in the same tool call. The Agent
+does not receive or provide a permit identifier or operator principal.
+
+Clients that do not support MCP elicitation fail closed with
+`MCP_ELICITATION_UNAVAILABLE` and the non-secret confirmation card. Decline and
+cancel responses return `OPERATOR_CONFIRMATION_DECLINED`; neither path submits
+an action. Codex must allow MCP elicitation prompts and keep the approval
+reviewer set to the user for this interaction to be treated as operator input.
 
 For REAL execution, the daemon validates the immutable LIMO Body snapshot and
 an exact operator permit, then starts `worker/limo_initial_pose_worker.py` from

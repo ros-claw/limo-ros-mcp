@@ -56,6 +56,28 @@ class RosclawGateway:
     async def request_initial_pose(self, **kwargs: Any) -> dict[str, Any]:
         return self._result(await self._runtime().request_action(**kwargs))
 
+    def prepare_operator_action(self, **kwargs: Any) -> Any:
+        """Build an exact REAL proposal for host-side confirmation without dispatching it."""
+
+        return self._runtime().prepare_operator_action(**kwargs)
+
+    async def confirm_operator_action(
+        self,
+        prepared: Any,
+        *,
+        principal_id: str,
+        confirmation: dict[str, Any],
+        wait_timeout_sec: float,
+    ) -> dict[str, Any]:
+        return self._result(
+            await self._runtime().confirm_operator_action(
+                prepared,
+                principal_id=principal_id,
+                confirmation=confirmation,
+                wait_timeout_sec=wait_timeout_sec,
+            )
+        )
+
     async def action_status(self, action_id: str) -> dict[str, Any]:
         return self._result(await self._runtime().get_action_status(action_id))
 
