@@ -194,9 +194,7 @@ def _pulse_server():
 
 
 def _pulse_sink(server):
-    code, stdout, stderr = _run(
-        ["/usr/bin/pactl", "--server", server, "list", "short", "sinks"]
-    )
+    code, stdout, stderr = _run(["/usr/bin/pactl", "--server", server, "list", "short", "sinks"])
     if code != 0:
         raise RequestError("cannot list PulseAudio sinks: %s" % stderr.strip())
     if not isinstance(stdout, str):
