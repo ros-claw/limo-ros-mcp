@@ -128,6 +128,21 @@ def _pose_from_amcl(message):
     }
 
 
+def _pose_from_transform(translation, rotation):
+    return {
+        "frame_id": "map",
+        "x": translation[0],
+        "y": translation[1],
+        "yaw": _yaw_from_quaternion(
+            type(
+                "Quaternion",
+                (object,),
+                {"x": rotation[0], "y": rotation[1], "z": rotation[2], "w": rotation[3]},
+            )()
+        ),
+    }
+
+
 def _pose_error(observed, target):
     position_error = math.hypot(observed["x"] - target["x"], observed["y"] - target["y"])
     yaw_delta = observed["yaw"] - target["yaw"]
@@ -160,7 +175,7 @@ def _wait_for_post_dispatch_amcl(rospy, state, dispatched_wall_time, timeout_sec
         ):
             return message
         rospy.sleep(0.02)
-    raise RequestError("no post-dispatch AMCL pose was observed")
+    return None
 
 
 def _run_ros(request):
@@ -226,23 +241,28 @@ def _run_ros(request):
         _wait_for_stopped_odometry(rospy, Odometry, request["verification_timeout_sec"])
         raise RequestError("move_base finished without SUCCEEDED: %s" % terminal_text)
 
+    _odom_after, stopped_linear, stopped_angular = _wait_for_stopped_odometry(
+        rospy, Odometry, request["verification_timeout_sec"]
+    )
     amcl_after = _wait_for_post_dispatch_amcl(
         rospy,
         amcl_state,
         dispatched_wall,
-        request["verification_timeout_sec"],
+        min(0.5, request["verification_timeout_sec"]),
     )
-    observed = _pose_from_amcl(amcl_after)
+    map_to_base_after = listener.lookupTransform("map", "base_link", rospy.Time(0))
+    if amcl_after is not None:
+        observed = _pose_from_amcl(amcl_after)
+        observed_source = "amcl_pose"
+    else:
+        observed = _pose_from_transform(map_to_base_after[0], map_to_base_after[1])
+        observed_source = "tf_map_to_base"
     position_error, yaw_error = _pose_error(observed, pose)
     tolerance = request["goal_tolerance"]
     if observed["frame_id"] != "map":
-        raise RequestError("post-navigation AMCL pose is not in map frame")
+        raise RequestError("post-navigation final pose is not in map frame")
     if position_error > tolerance["xy_m"] or yaw_error > tolerance["yaw_rad"]:
-        raise RequestError("post-navigation AMCL pose is outside requested tolerance")
-    _odom_after, stopped_linear, stopped_angular = _wait_for_stopped_odometry(
-        rospy, Odometry, request["verification_timeout_sec"]
-    )
-    map_to_base_after = listener.lookupTransform("map", "base_link", rospy.Time(0))
+        raise RequestError("post-navigation final pose is outside requested tolerance")
     amcl_subscriber.unregister()
     return {
         "protocol": PROTOCOL,
@@ -271,6 +291,8 @@ def _run_ros(request):
             },
         },
         "observed_final_pose": observed,
+        "observed_final_pose_source": observed_source,
+        "amcl_pose_observed_after_dispatch": amcl_after is not None,
         "position_error_m": position_error,
         "yaw_error_rad": yaw_error,
         "stopped_odometry": {
