@@ -27,6 +27,7 @@ MAX_REQUEST_BYTES = 65536
 SAMPLE_RATE_HZ = 16000
 MAX_AMPLITUDE = 0.25
 ALLOWED_FREQUENCIES_HZ = (440, 660, 880)
+ALLOWED_USB_CARD_NAMES = ("USB PnP Audio Device", "USB PnP Sound Device")
 try:
     STRING_TYPES = (basestring,)  # type: ignore[name-defined]  # noqa: F821
 except NameError:
@@ -107,16 +108,16 @@ def _usb_audio_card():
             cards = handle.read()
     except IOError as exc:
         raise RequestError("ALSA card inventory unavailable: %s" % exc)
-    blocks = re.split(r"(?=^\s*\d+\s+\[)", cards, flags=re.MULTILINE)
     matches = []
-    for block in blocks:
-        if "USB-Audio" not in block or "USB PnP Sound Device" not in block:
+    headers = list(re.finditer(r"^[ \t]*(\d+)[ \t]+\[", cards, flags=re.MULTILINE))
+    for index, header in enumerate(headers):
+        end = headers[index + 1].start() if index + 1 < len(headers) else len(cards)
+        block = cards[header.start() : end]
+        if "USB-Audio" not in block or not any(name in block for name in ALLOWED_USB_CARD_NAMES):
             continue
-        match = re.match(r"^\s*(\d+)\s+\[", block)
-        if match:
-            matches.append(int(match.group(1)))
+        matches.append(int(header.group(1)))
     if len(matches) != 1:
-        raise RequestError("expected exactly one USB PnP Sound Device ALSA card")
+        raise RequestError("expected exactly one allowlisted USB PnP audio ALSA card")
     return matches[0]
 
 
