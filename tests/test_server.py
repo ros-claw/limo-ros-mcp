@@ -427,21 +427,25 @@ class FakeElicitationContext:
     def __init__(self, *, accepted: bool) -> None:
         self.accepted = accepted
         self.messages: list[str] = []
-        self.request_context = SimpleNamespace(
-            session=SimpleNamespace(
-                client_params=SimpleNamespace(
-                    capabilities=SimpleNamespace(
-                        elicitation=SimpleNamespace(form=SimpleNamespace())
-                    )
-                )
-            )
+        self.schemas: list[dict[str, Any]] = []
+        self.client_params = SimpleNamespace(
+            capabilities=SimpleNamespace(elicitation=SimpleNamespace(form=SimpleNamespace()))
         )
+        self.request_context = SimpleNamespace(session=self)
 
-    async def elicit(self, *, message: str, schema: Any) -> Any:
+    async def elicit_form(
+        self,
+        *,
+        message: str,
+        related_request_id: str,
+        **kwargs: Any,
+    ) -> Any:
         self.messages.append(message)
+        self.schemas.append(kwargs["requestedSchema"])
+        assert related_request_id == self.request_id
         return SimpleNamespace(
             action="accept" if self.accepted else "decline",
-            data=SimpleNamespace(confirm=self.accepted) if self.accepted else None,
+            content={} if self.accepted else None,
         )
 
 
@@ -490,6 +494,7 @@ async def test_real_initial_pose_uses_elicitation_and_hides_permit_input() -> No
         "permit_exposed", ""
     )
     assert context.messages and "Target:" in context.messages[0]
+    assert context.schemas == [{"type": "object", "properties": {}}]
     assert [call["operation"] for call in gateway.calls] == ["prepare", "confirm"]
 
 
