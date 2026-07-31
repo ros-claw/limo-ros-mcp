@@ -5,17 +5,23 @@ from __future__ import annotations
 import subprocess
 from typing import Any
 
-from limo_ros_mcp.roscli import RosCliReadOnlyClient
+from limo_ros_mcp.roscli import RosCliReadOnlyClient, build_ros1_cli_environment
 
 
 def test_roscli_observation_uses_only_type_and_echo(monkeypatch: Any) -> None:
     calls: list[list[str]] = []
+    environments: list[dict[str, str]] = []
 
-    def run(command: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+    def run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
         calls.append(command)
+        environments.append(kwargs["env"])
         output = "sensor_msgs/Imu\n" if command[1] == "type" else "orientation:\n  w: 1.0\n---\n"
         return subprocess.CompletedProcess(command, 0, stdout=output, stderr="")
 
+    monkeypatch.setattr(
+        "limo_ros_mcp.roscli.Path.is_dir",
+        lambda path: str(path).startswith("/opt/ros/melodic"),
+    )
     monkeypatch.setattr("shutil.which", lambda name: f"/opt/ros/melodic/bin/{name}")
     monkeypatch.setattr("subprocess.run", run)
     client = RosCliReadOnlyClient({"/imu": "sensor_msgs/Imu"})
@@ -26,6 +32,38 @@ def test_roscli_observation_uses_only_type_and_echo(monkeypatch: Any) -> None:
     assert message["orientation"]["w"] == 1.0
     assert [command[1:3] for command in calls] == [["type", "/imu"], ["echo", "-n"]]
     assert not any("pub" in command or "publish" in command for command in calls)
+    assert all(environment["ROS_PYTHON_VERSION"] == "2" for environment in environments)
+    assert all(
+        "/opt/ros/melodic/lib/python2.7/dist-packages" in environment["PYTHONPATH"]
+        for environment in environments
+    )
+
+
+def test_roscli_builds_melodic_environment_without_inherited_ros_vars(
+    monkeypatch: Any,
+) -> None:
+    for name in (
+        "PYTHONPATH",
+        "ROS_PACKAGE_PATH",
+        "ROS_MASTER_URI",
+        "ROS_DISTRO",
+        "ROS_VERSION",
+        "ROS_PYTHON_VERSION",
+        "ROS_ROOT",
+        "ROS_ETC_DIR",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(
+        "limo_ros_mcp.roscli.Path.is_dir",
+        lambda path: str(path).startswith("/opt/ros/melodic"),
+    )
+
+    environment = build_ros1_cli_environment()
+
+    assert environment["ROS_MASTER_URI"] == "http://localhost:11311"
+    assert environment["ROS_DISTRO"] == "melodic"
+    assert environment["ROS_PYTHON_VERSION"] == "2"
+    assert "/opt/ros/melodic/lib/python2.7/dist-packages" in environment["PYTHONPATH"]
 
 
 def test_roscli_samples_multiple_yaml_documents(monkeypatch: Any) -> None:

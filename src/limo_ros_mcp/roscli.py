@@ -2,14 +2,50 @@
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
 import time
 import uuid
+from pathlib import Path
 from typing import Any
 
 import yaml
+
+
+def build_ros1_cli_environment() -> dict[str, str]:
+    """Build the minimal Melodic environment needed by fixed read-only ROS commands."""
+
+    env = os.environ.copy()
+    distro = env.get("ROS_DISTRO", "melodic")
+    ros_root = Path("/opt/ros") / distro
+    home = Path.home()
+    workspace_roots = [home / "agilex_ws", home / "catkin_ws"]
+    python_paths = [
+        *(Path(item) for item in env.get("PYTHONPATH", "").split(os.pathsep) if item),
+        *(root / "devel/lib/python2.7/dist-packages" for root in workspace_roots),
+        ros_root / "lib/python2.7/dist-packages",
+    ]
+    package_paths = [
+        *(Path(item) for item in env.get("ROS_PACKAGE_PATH", "").split(os.pathsep) if item),
+        *(root / "src" for root in workspace_roots),
+        ros_root / "share",
+    ]
+    env["PYTHONPATH"] = os.pathsep.join(
+        dict.fromkeys(str(path) for path in python_paths if path.is_dir())
+    )
+    env["ROS_PACKAGE_PATH"] = os.pathsep.join(
+        dict.fromkeys(str(path) for path in package_paths if path.is_dir())
+    )
+    env.setdefault("ROS_MASTER_URI", "http://localhost:11311")
+    env.setdefault("ROS_DISTRO", distro)
+    env.setdefault("ROS_VERSION", "1")
+    env.setdefault("ROS_PYTHON_VERSION", "2")
+    if ros_root.is_dir():
+        env.setdefault("ROS_ROOT", str(ros_root / "share/ros"))
+        env.setdefault("ROS_ETC_DIR", str(ros_root / "etc/ros"))
+    return env
 
 
 class RosCliReadOnlyClient:
@@ -28,6 +64,7 @@ class RosCliReadOnlyClient:
         self.last_sample_elapsed_sec = 0.0
         self.transport_generation = f"roscli-{uuid.uuid4()}"
         self._observed_topic_types: dict[str, str] = {}
+        self._environment = build_ros1_cli_environment()
         rostopic = shutil.which("rostopic")
         rosnode = shutil.which("rosnode")
         rosrun = shutil.which("rosrun")
@@ -46,6 +83,7 @@ class RosCliReadOnlyClient:
             capture_output=True,
             text=True,
             timeout=self.timeout_sec,
+            env=self._environment,
         )
         output = result.stdout
         if len(output.encode("utf-8")) > self.max_output_bytes:
@@ -168,6 +206,7 @@ class RosCliReadOnlyClient:
             capture_output=True,
             text=True,
             timeout=timeout_sec + 1.0,
+            env=self._environment,
         )
         output = result.stdout
         if len(output.encode("utf-8")) > self.max_output_bytes:
