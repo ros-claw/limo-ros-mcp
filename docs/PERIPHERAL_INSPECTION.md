@@ -43,9 +43,13 @@ gain. `limo_measure_microphone` accepts only one to three seconds and a small sa
 It reads mono signed 16-bit PCM into memory, computes RMS/peak/clipping statistics, then discards
 the samples. It never returns raw audio.
 
-Speaker playback and volume changes are physical effects and are not exposed by this read-only
-release. A future playback capability must enter through a signed Robot Pack, rosclawd, exact
-operator confirmation, a daemon-owned executor, and an execution receipt.
+`limo_request_tone` exposes one deliberately narrow physical effect through a
+signed Robot Pack and `rosclawd`: a 440, 660, or 880 Hz synthesized tone lasting
+0.2–1.0 seconds at 5–25% temporary Speaker gain. REAL playback requires exact
+in-context operator confirmation. The revision-locked worker selects the single
+detected USB PnP audio card and restores the previous Speaker gain/mute state.
+It accepts no file path, arbitrary command, mixer name, or ALSA device. A
+successful receipt is `DRIVER_CONFIRMED`; human hearing is separate evidence.
 
 ## Declared but unbound
 

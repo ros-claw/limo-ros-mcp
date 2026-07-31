@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "limo-ros-mcp"
-version = "0.7.0"
+version = "0.8.0"
 description = "Inspection-focused MCP server for the AgileX LIMO ROS 1 platform"
 readme = "README.md"
 license = {text = "MIT"}
@@ -75,7 +75,7 @@ select = ["E", "F", "I", "N", "W", "UP", "B", "C4", "SIM"]
 ignore = ["E501"]
 
 [tool.ruff.lint.per-file-ignores]
-"worker/limo_initial_pose_worker.py" = ["C405", "UP031"]
+"worker/*.py" = ["B904", "C405", "SIM115", "UP015", "UP024", "UP031"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["limo_ros_mcp"]

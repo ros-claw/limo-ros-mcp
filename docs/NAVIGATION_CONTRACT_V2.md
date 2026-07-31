@@ -38,7 +38,11 @@ SHADOW requests carry the normalized goal, readiness hash, route-policy hash,
 map-image hash, tolerances, and expected effect through `rosclawd.request_action`.
 No MCP tool publishes a ROS topic or calls `move_base` directly.
 
-REAL navigation remains blocked with `LIMO_DAEMON_PREFLIGHT_REQUIRED`. Enabling it
-requires daemon-owned fresh ROS preflight, plan validation, lease/stop guards, a
-verified executor, authorization, and canonical execution receipts. Client-side
-evidence and static map validation do not provide those guarantees.
+REAL navigation uses an in-context confirmation for one exact target. After
+confirmation, `rosclawd` injects an opaque one-shot permit and launches the
+revision-locked `limo_navigation_worker.py`. The worker independently requires
+fresh AMCL, lidar, odometry and chassis status, a zero chassis error code, the
+`map -> odom -> base_link` TF chain, and a live `/move_base` action server before
+dispatch. It accepts success only when move_base reaches `SUCCEEDED`, the final
+AMCL pose is within the policy tolerance, and odometry reports the base stopped.
+Timeout or non-success cancels the goal and fails the receipt.
