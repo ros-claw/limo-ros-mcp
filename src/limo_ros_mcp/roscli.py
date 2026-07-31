@@ -19,7 +19,7 @@ class RosCliReadOnlyClient:
         self,
         topic_types: dict[str, str],
         *,
-        timeout_sec: float = 2.0,
+        timeout_sec: float = 5.0,
         max_output_bytes: int = 2_000_000,
     ) -> None:
         self.topic_types = dict(topic_types)

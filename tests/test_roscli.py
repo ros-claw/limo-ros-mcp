@@ -22,6 +22,7 @@ def test_roscli_observation_uses_only_type_and_echo(monkeypatch: Any) -> None:
 
     message = client.subscribe_once("/imu", "sensor_msgs/Imu")
 
+    assert client.timeout_sec == 5.0
     assert message["orientation"]["w"] == 1.0
     assert [command[1:3] for command in calls] == [["type", "/imu"], ["echo", "-n"]]
     assert not any("pub" in command or "publish" in command for command in calls)

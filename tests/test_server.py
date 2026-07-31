@@ -48,7 +48,23 @@ async def test_server_exposes_no_raw_ros_publish_tool() -> None:
     }
     assert not any("publish" in name or "cmd_vel" in name for name in names)
     schemas = {tool.name: tool.inputSchema for tool in tools}
+    for name in {
+        "limo_probe_ros",
+        "limo_observe",
+        "limo_get_topic_info",
+        "limo_sample_topic",
+        "limo_get_base_state",
+        "limo_get_laser_summary",
+        "limo_get_localization_state",
+        "limo_get_navigation_state",
+        "limo_get_map_summary",
+        "limo_get_diagnostics",
+        "limo_get_transform_state",
+        "limo_get_patrol_readiness",
+    }:
+        assert schemas[name]["properties"]["timeout_sec"]["default"] == 5.0
     navigation_properties = schemas["limo_request_navigation"]["properties"]
+    assert navigation_properties["wait_timeout_sec"]["default"] == 2.0
     assert "readiness_snapshot_hash" in schemas["limo_request_navigation"]["required"]
     assert "body_snapshot_hash" in schemas["limo_request_navigation"]["required"]
     assert {
