@@ -338,6 +338,15 @@ class FakeElicitationContext:
     def __init__(self, *, accepted: bool) -> None:
         self.accepted = accepted
         self.messages: list[str] = []
+        self.request_context = SimpleNamespace(
+            session=SimpleNamespace(
+                client_params=SimpleNamespace(
+                    capabilities=SimpleNamespace(
+                        elicitation=SimpleNamespace(form=SimpleNamespace())
+                    )
+                )
+            )
+        )
 
     async def elicit(self, *, message: str, schema: Any) -> Any:
         self.messages.append(message)
@@ -345,6 +354,18 @@ class FakeElicitationContext:
             action="accept" if self.accepted else "decline",
             data=SimpleNamespace(confirm=self.accepted) if self.accepted else None,
         )
+
+
+class FakeUnsupportedElicitationContext:
+    request_id = "mcp-request-no-elicitation"
+    request_context = SimpleNamespace(
+        session=SimpleNamespace(
+            client_params=SimpleNamespace(capabilities=SimpleNamespace(elicitation=None))
+        )
+    )
+
+    async def elicit(self, *, message: str, schema: Any) -> Any:
+        raise AssertionError("elicit must not be called for an unsupported client")
 
 
 @pytest.mark.asyncio
@@ -403,6 +424,30 @@ async def test_declined_initial_pose_confirmation_never_submits() -> None:
     )
 
     assert result["error_code"] == "OPERATOR_CONFIRMATION_DECLINED"
+    assert result["command_dispatched"] is False
+    assert [call["operation"] for call in gateway.calls] == ["prepare"]
+
+
+@pytest.mark.asyncio
+async def test_real_initial_pose_fails_fast_without_form_elicitation() -> None:
+    gateway = FakeGateway()
+    server = build_mcp_server(LimoMCPService(gateway=gateway, goal_validator=FakeGoalValidator()))
+    result = await server._tool_manager.call_tool(
+        "limo_request_initial_pose",
+        {
+            "x": 0.75,
+            "y": -1.25,
+            "yaw": 0.35,
+            "body_snapshot_hash": "sha256:test-body-snapshot",
+            "execution_mode": "REAL",
+            "action_id": "action-no-elicitation-initial-pose",
+            "deadline_at": "2030-01-02T03:04:05Z",
+        },
+        context=FakeUnsupportedElicitationContext(),
+        convert_result=False,
+    )
+
+    assert result["error_code"] == "MCP_ELICITATION_UNAVAILABLE"
     assert result["command_dispatched"] is False
     assert [call["operation"] for call in gateway.calls] == ["prepare"]
 
