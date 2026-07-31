@@ -60,9 +60,9 @@ async def test_server_exposes_no_raw_ros_publish_tool() -> None:
         "limo_get_map_summary",
         "limo_get_diagnostics",
         "limo_get_transform_state",
-        "limo_get_patrol_readiness",
     }:
         assert schemas[name]["properties"]["timeout_sec"]["default"] == 5.0
+    assert schemas["limo_get_patrol_readiness"]["properties"]["timeout_sec"]["default"] == 10.0
     navigation_properties = schemas["limo_request_navigation"]["properties"]
     assert navigation_properties["wait_timeout_sec"]["default"] == 2.0
     assert "readiness_snapshot_hash" in schemas["limo_request_navigation"]["required"]
