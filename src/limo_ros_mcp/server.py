@@ -247,7 +247,7 @@ class LimoMCPService:
         self,
         observation: str,
         endpoint: str = "ws://127.0.0.1:9090",
-        timeout_sec: float = 2.0,
+        timeout_sec: float = 5.0,
         transport: str = "auto",
         include_raw: bool = True,
     ) -> dict[str, Any]:
@@ -368,7 +368,7 @@ class LimoMCPService:
         self,
         observation: str,
         endpoint: str = "ws://127.0.0.1:9090",
-        timeout_sec: float = 2.0,
+        timeout_sec: float = 5.0,
         transport: str = "auto",
     ) -> dict[str, Any]:
         if observation not in LIMO_OBSERVATION_TOPICS:
@@ -598,7 +598,7 @@ class LimoMCPService:
     def base_state(
         self,
         endpoint: str = "ws://127.0.0.1:9090",
-        timeout_sec: float = 2.0,
+        timeout_sec: float = 5.0,
         transport: str = "auto",
     ) -> dict[str, Any]:
         return self._collect_summaries(
@@ -611,7 +611,7 @@ class LimoMCPService:
     def laser_summary(
         self,
         endpoint: str = "ws://127.0.0.1:9090",
-        timeout_sec: float = 2.0,
+        timeout_sec: float = 5.0,
         transport: str = "auto",
     ) -> dict[str, Any]:
         return self.observe("laser_scan", endpoint, timeout_sec, transport, False)
@@ -619,7 +619,7 @@ class LimoMCPService:
     def localization_state(
         self,
         endpoint: str = "ws://127.0.0.1:9090",
-        timeout_sec: float = 2.0,
+        timeout_sec: float = 5.0,
         transport: str = "auto",
     ) -> dict[str, Any]:
         return self._collect_summaries(
@@ -632,7 +632,7 @@ class LimoMCPService:
     def navigation_state(
         self,
         endpoint: str = "ws://127.0.0.1:9090",
-        timeout_sec: float = 2.0,
+        timeout_sec: float = 5.0,
         transport: str = "auto",
     ) -> dict[str, Any]:
         return self._collect_summaries(
@@ -645,7 +645,7 @@ class LimoMCPService:
     def map_summary(
         self,
         endpoint: str = "ws://127.0.0.1:9090",
-        timeout_sec: float = 2.0,
+        timeout_sec: float = 5.0,
         transport: str = "auto",
         include_grids: bool = False,
     ) -> dict[str, Any]:
@@ -662,7 +662,7 @@ class LimoMCPService:
     def diagnostics_state(
         self,
         endpoint: str = "ws://127.0.0.1:9090",
-        timeout_sec: float = 2.0,
+        timeout_sec: float = 5.0,
         transport: str = "auto",
         include_latest_log: bool = False,
     ) -> dict[str, Any]:
@@ -679,7 +679,7 @@ class LimoMCPService:
     def transform_state(
         self,
         endpoint: str = "ws://127.0.0.1:9090",
-        timeout_sec: float = 2.0,
+        timeout_sec: float = 5.0,
         transport: str = "auto",
     ) -> dict[str, Any]:
         return self._collect_summaries(
@@ -692,7 +692,7 @@ class LimoMCPService:
     def patrol_readiness(
         self,
         endpoint: str = "ws://127.0.0.1:9090",
-        timeout_sec: float = 2.0,
+        timeout_sec: float = 5.0,
         transport: str = "auto",
         body_id: str = "limo",
         body_snapshot_hash: str = "",
@@ -1085,7 +1085,7 @@ def build_mcp_server(service: LimoMCPService | None = None) -> FastMCP:
     async def limo_observe(
         observation: str,
         endpoint: str = "ws://127.0.0.1:9090",
-        timeout_sec: float = 2.0,
+        timeout_sec: float = 5.0,
         transport: str = "auto",
         include_raw: bool = False,
     ) -> dict[str, Any]:
@@ -1102,7 +1102,7 @@ def build_mcp_server(service: LimoMCPService | None = None) -> FastMCP:
     async def limo_get_topic_info(
         observation: str,
         endpoint: str = "ws://127.0.0.1:9090",
-        timeout_sec: float = 2.0,
+        timeout_sec: float = 5.0,
         transport: str = "auto",
     ) -> dict[str, Any]:
         return await asyncio.to_thread(
@@ -1140,7 +1140,7 @@ def build_mcp_server(service: LimoMCPService | None = None) -> FastMCP:
     @mcp.tool(description="Read and summarize LIMO status, odometry, and IMU concurrently.")
     async def limo_get_base_state(
         endpoint: str = "ws://127.0.0.1:9090",
-        timeout_sec: float = 2.0,
+        timeout_sec: float = 5.0,
         transport: str = "auto",
     ) -> dict[str, Any]:
         return await asyncio.to_thread(implementation.base_state, endpoint, timeout_sec, transport)
@@ -1152,7 +1152,7 @@ def build_mcp_server(service: LimoMCPService | None = None) -> FastMCP:
     )
     async def limo_get_laser_summary(
         endpoint: str = "ws://127.0.0.1:9090",
-        timeout_sec: float = 2.0,
+        timeout_sec: float = 5.0,
         transport: str = "auto",
     ) -> dict[str, Any]:
         return await asyncio.to_thread(
@@ -1162,7 +1162,7 @@ def build_mcp_server(service: LimoMCPService | None = None) -> FastMCP:
     @mcp.tool(description="Read AMCL and fused pose summaries with localization covariance.")
     async def limo_get_localization_state(
         endpoint: str = "ws://127.0.0.1:9090",
-        timeout_sec: float = 2.0,
+        timeout_sec: float = 5.0,
         transport: str = "auto",
     ) -> dict[str, Any]:
         return await asyncio.to_thread(
@@ -1174,7 +1174,7 @@ def build_mcp_server(service: LimoMCPService | None = None) -> FastMCP:
     )
     async def limo_get_navigation_state(
         endpoint: str = "ws://127.0.0.1:9090",
-        timeout_sec: float = 2.0,
+        timeout_sec: float = 5.0,
         transport: str = "auto",
     ) -> dict[str, Any]:
         return await asyncio.to_thread(
@@ -1186,7 +1186,7 @@ def build_mcp_server(service: LimoMCPService | None = None) -> FastMCP:
     )
     async def limo_get_map_summary(
         endpoint: str = "ws://127.0.0.1:9090",
-        timeout_sec: float = 2.0,
+        timeout_sec: float = 5.0,
         transport: str = "auto",
         include_grids: bool = False,
     ) -> dict[str, Any]:
@@ -1201,7 +1201,7 @@ def build_mcp_server(service: LimoMCPService | None = None) -> FastMCP:
     @mcp.tool(description="Read ROS diagnostics and optionally the latest aggregated ROS log.")
     async def limo_get_diagnostics(
         endpoint: str = "ws://127.0.0.1:9090",
-        timeout_sec: float = 2.0,
+        timeout_sec: float = 5.0,
         transport: str = "auto",
         include_latest_log: bool = False,
     ) -> dict[str, Any]:
@@ -1216,7 +1216,7 @@ def build_mcp_server(service: LimoMCPService | None = None) -> FastMCP:
     @mcp.tool(description="Read dynamic and static TF messages as compact parent-child edges.")
     async def limo_get_transform_state(
         endpoint: str = "ws://127.0.0.1:9090",
-        timeout_sec: float = 2.0,
+        timeout_sec: float = 5.0,
         transport: str = "auto",
     ) -> dict[str, Any]:
         return await asyncio.to_thread(
@@ -1231,7 +1231,7 @@ def build_mcp_server(service: LimoMCPService | None = None) -> FastMCP:
     )
     async def limo_get_patrol_readiness(
         endpoint: str = "ws://127.0.0.1:9090",
-        timeout_sec: float = 2.0,
+        timeout_sec: float = 5.0,
         transport: str = "auto",
         body_id: str = "limo",
         body_snapshot_hash: str = "",
