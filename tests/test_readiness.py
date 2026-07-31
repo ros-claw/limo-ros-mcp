@@ -95,6 +95,23 @@ def test_stale_amcl_warns_but_missing_receive_time_fails_closed() -> None:
     assert "LIMO_CLOCK_UNVERIFIED" in evidence["blockers"]
 
 
+def test_warning_only_evidence_is_degraded_but_ready() -> None:
+    records = _records()
+    records["localized_pose"]["summary"]["header"] = {"age_sec": 30.0}
+
+    evidence = build_readiness_evidence(
+        records,
+        body_snapshot_hash="sha256:body",
+        now_wall=100.0,
+        now_monotonic=50.0,
+    )
+
+    assert evidence["state"] == "DEGRADED"
+    assert evidence["ready"] is True
+    assert evidence["blockers"] == []
+    assert evidence["warnings"] == ["LIMO_AMCL_STALE"]
+
+
 def test_snapshot_validation_rejects_expiry_and_tampering() -> None:
     evidence = build_readiness_evidence(
         _records(),

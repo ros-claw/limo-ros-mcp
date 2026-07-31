@@ -127,10 +127,10 @@ class LimoMCPService:
                 "LIMO_BODY_SNAPSHOT_MISMATCH",
                 "The body snapshot does not match the referenced readiness snapshot.",
             )
-        if snapshot.get("state") != "READY":
+        if snapshot.get("ready") is not True or snapshot.get("blockers"):
             return self._navigation_block(
                 "LIMO_READINESS_NOT_READY",
-                "The referenced readiness snapshot is not READY.",
+                "The referenced readiness snapshot contains a blocking failure.",
             )
         return {"ok": True, "readiness": snapshot}
 
