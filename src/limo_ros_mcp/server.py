@@ -27,6 +27,7 @@ from limo_ros_mcp.contract import (
 )
 from limo_ros_mcp.messages import summarize_observation
 from limo_ros_mcp.navigation import NavigationGoalValidator
+from limo_ros_mcp.peripherals import PeripheralInspector
 from limo_ros_mcp.readiness import build_readiness_evidence, validate_readiness_snapshot
 from limo_ros_mcp.rosbridge import RosbridgeReadOnlyClient, validate_rosbridge_endpoint
 from limo_ros_mcp.rosclaw_gateway import RosclawGateway
@@ -71,9 +72,11 @@ class LimoMCPService:
         self,
         gateway: RosclawGateway | Any | None = None,
         goal_validator: NavigationGoalValidator | Any | None = None,
+        peripheral_inspector: PeripheralInspector | Any | None = None,
     ) -> None:
         self._gateway = gateway or RosclawGateway()
         self._goal_validator = goal_validator or NavigationGoalValidator()
+        self._peripheral_inspector = peripheral_inspector or PeripheralInspector()
         self._clock_tracker = ClockJumpTracker()
         self._readiness_snapshots: OrderedDict[str, dict[str, Any]] = OrderedDict()
         self._readiness_lock = Lock()
@@ -270,6 +273,7 @@ class LimoMCPService:
             "color_image",
             "depth_image",
             "depth_points",
+            "infrared_image",
             "map",
             "global_costmap",
             "local_costmap",
@@ -429,6 +433,7 @@ class LimoMCPService:
             "color_image",
             "depth_image",
             "depth_points",
+            "infrared_image",
             "map",
             "global_costmap",
             "local_costmap",
@@ -701,6 +706,69 @@ class LimoMCPService:
             timeout_sec=timeout_sec,
             transport=transport,
         )
+
+    def camera_state(
+        self,
+        endpoint: str = "ws://127.0.0.1:9090",
+        timeout_sec: float = 5.0,
+        transport: str = "auto",
+    ) -> dict[str, Any]:
+        core = [
+            "color_image",
+            "color_camera_info",
+            "depth_image",
+            "depth_camera_info",
+            "depth_points",
+        ]
+        optional = ["infrared_image", "infrared_camera_info"]
+        result = self._collect_summaries(
+            [*core, *optional],
+            endpoint=endpoint,
+            timeout_sec=timeout_sec,
+            transport=transport,
+        )
+        failures = result.get("failures", {})
+        summaries = result.get("summaries", {})
+        core_failures = {
+            name: (
+                failures.get(name, {"error_code": "LIMO_CAMERA_STREAM_UNAVAILABLE"})
+                if isinstance(failures, dict)
+                else {"error_code": "LIMO_CAMERA_STREAM_UNAVAILABLE"}
+            )
+            for name in core
+            if not isinstance(summaries, dict) or name not in summaries
+        }
+        optional_inactive = [
+            name for name in optional if not isinstance(summaries, dict) or name not in summaries
+        ]
+        return {
+            **result,
+            "ok": not core_failures,
+            "core_ready": not core_failures,
+            "core_failures": core_failures,
+            "optional_inactive": optional_inactive,
+        }
+
+    def peripheral_inventory(self) -> dict[str, Any]:
+        return self._peripheral_inspector.inventory()
+
+    def audio_state(self) -> dict[str, Any]:
+        return self._peripheral_inspector.audio_state()
+
+    def microphone_level(self, *, duration_sec: int, sample_rate_hz: int) -> dict[str, Any]:
+        return self._peripheral_inspector.microphone_level(
+            duration_sec=duration_sec,
+            sample_rate_hz=sample_rate_hz,
+        )
+
+    def display_state(self) -> dict[str, Any]:
+        return self._peripheral_inspector.display_state()
+
+    def dabai_device_state(self) -> dict[str, Any]:
+        return self._peripheral_inspector.dabai_device_state()
+
+    def platform_health(self) -> dict[str, Any]:
+        return self._peripheral_inspector.platform_health()
 
     def patrol_readiness(
         self,
@@ -1069,8 +1137,9 @@ def build_mcp_server(service: LimoMCPService | None = None) -> FastMCP:
         "rosclaw-limo",
         instructions=(
             "AgileX LIMO ROS 1 inspection integration. Discover, inspect, sample, and summarize "
-            "the base, lidar, localization, navigation, map, diagnostics, TF, and camera topic "
-            "contracts. Navigation is submitted through rosclawd."
+            "the base, lidar, localization, navigation, map, diagnostics, TF, camera, audio, "
+            "display, and Jetson host contracts. State-changing requests are submitted through "
+            "rosclawd."
         ),
     )
 
@@ -1235,6 +1304,82 @@ def build_mcp_server(service: LimoMCPService | None = None) -> FastMCP:
         return await asyncio.to_thread(
             implementation.transform_state, endpoint, timeout_sec, transport
         )
+
+    @mcp.tool(
+        description=(
+            "Read all Dabai color, depth, IR, point-cloud, and calibration streams as compact "
+            "summaries."
+        )
+    )
+    async def limo_get_camera_state(
+        endpoint: str = "ws://127.0.0.1:9090",
+        timeout_sec: float = 5.0,
+        transport: str = "auto",
+    ) -> dict[str, Any]:
+        return await asyncio.to_thread(
+            implementation.camera_state, endpoint, timeout_sec, transport
+        )
+
+    @mcp.tool(
+        description=(
+            "Inventory documented LIMO peripherals against live USB, framebuffer, input, and "
+            "ROS evidence without opening serial or motor interfaces."
+        )
+    )
+    async def limo_list_peripherals() -> dict[str, Any]:
+        return await asyncio.to_thread(implementation.peripheral_inventory)
+
+    @mcp.tool(
+        description=(
+            "Read the LIMO USB sound-card playback, capture, speaker gain, microphone gain, and "
+            "amplifier-interface state without changing volume."
+        )
+    )
+    async def limo_get_audio_state() -> dict[str, Any]:
+        return await asyncio.to_thread(implementation.audio_state)
+
+    @mcp.tool(
+        description=(
+            "Measure bounded microphone RMS and peak levels in memory; no audio samples are "
+            "retained or returned."
+        )
+    )
+    async def limo_measure_microphone(
+        duration_sec: int = 1,
+        sample_rate_hz: int = 16000,
+    ) -> dict[str, Any]:
+        return await asyncio.to_thread(
+            implementation.microphone_level,
+            duration_sec=duration_sec,
+            sample_rate_hz=sample_rate_hz,
+        )
+
+    @mcp.tool(
+        description=(
+            "Read the LIMO rear framebuffer and touchscreen state and report whether the "
+            "documented front OLED has a bound software interface."
+        )
+    )
+    async def limo_get_display_state() -> dict[str, Any]:
+        return await asyncio.to_thread(implementation.display_state)
+
+    @mcp.tool(
+        description=(
+            "Read Dabai device identity, firmware/SDK version, IR temperature, and LDP state "
+            "through a fixed allowlist of getter-only ROS services."
+        )
+    )
+    async def limo_get_dabai_device_state() -> dict[str, Any]:
+        return await asyncio.to_thread(implementation.dabai_device_state)
+
+    @mcp.tool(
+        description=(
+            "Read Jetson thermal zones, memory, swap, disk, load average, and uptime for patrol "
+            "preflight."
+        )
+    )
+    async def limo_get_platform_health() -> dict[str, Any]:
+        return await asyncio.to_thread(implementation.platform_health)
 
     @mcp.tool(
         description=(

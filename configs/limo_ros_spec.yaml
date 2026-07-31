@@ -90,9 +90,19 @@ preferred_interfaces:
 
   - capability_id: limo.observe.camera
     ros_kind: topic_group
-    ros_names: [/camera/color/image_raw, /camera/depth/image_raw, /camera/depth/points]
-    ros_types: [sensor_msgs/Image, sensor_msgs/Image, sensor_msgs/PointCloud2]
-    reason: "Dabai U3 RGB-D inspection streams from astra_camera/dabai_u3.launch; payloads are summarized by default."
+    ros_names: [/camera/color/image_raw, /camera/color/camera_info, /camera/depth/image_raw, /camera/depth/camera_info, /camera/depth/points, /camera/ir/image_raw, /camera/ir/camera_info]
+    ros_types: [sensor_msgs/Image, sensor_msgs/CameraInfo, sensor_msgs/Image, sensor_msgs/CameraInfo, sensor_msgs/PointCloud2, sensor_msgs/Image, sensor_msgs/CameraInfo]
+    reason: "Dabai U3 color, depth, IR, point-cloud, and calibration streams from astra_camera/dabai_u3.launch; payloads are summarized by default."
+
+  - capability_id: limo.observe.host_peripherals
+    host_kind: linux_read_only
+    interfaces: [usb, alsa, framebuffer, input, thermal, procfs]
+    reason: "Correlate documented audio, display, touchscreen, and Jetson health with live host evidence without changing device state."
+
+  - capability_id: limo.observe.dabai_device_state
+    ros_kind: read_only_service_group
+    ros_names: [/camera/get_device_info, /camera/get_device_type, /camera/get_serial, /camera/get_version, /camera/get_ir_temperature, /camera/get_ldp_status]
+    reason: "Getter-only camera identity, firmware, IR temperature, and LDP health when an advertised image stream is inactive."
 
 discouraged_interfaces:
   - ros_kind: topic

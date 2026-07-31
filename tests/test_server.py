@@ -30,6 +30,14 @@ def test_dabai_camera_contract_uses_live_astra_topics() -> None:
         "/camera/depth/points",
         "sensor_msgs/PointCloud2",
     )
+    assert LIMO_OBSERVATION_TOPICS["infrared_image"] == (
+        "/camera/ir/image_raw",
+        "sensor_msgs/Image",
+    )
+    assert LIMO_OBSERVATION_TOPICS["infrared_camera_info"] == (
+        "/camera/ir/camera_info",
+        "sensor_msgs/CameraInfo",
+    )
 
 
 @pytest.mark.asyncio
@@ -40,19 +48,26 @@ async def test_server_exposes_no_raw_ros_publish_tool() -> None:
 
     assert names == {
         "limo_get_base_state",
+        "limo_get_camera_state",
         "limo_get_contract",
+        "limo_get_audio_state",
         "limo_get_action_status",
+        "limo_get_dabai_device_state",
         "limo_get_diagnostics",
+        "limo_get_display_state",
         "limo_get_execution_receipt",
         "limo_get_laser_summary",
         "limo_get_localization_state",
         "limo_get_map_summary",
         "limo_get_navigation_state",
         "limo_get_patrol_readiness",
+        "limo_get_platform_health",
         "limo_get_runtime_status",
         "limo_get_topic_info",
         "limo_get_transform_state",
+        "limo_list_peripherals",
         "limo_list_observations",
+        "limo_measure_microphone",
         "limo_observe",
         "limo_probe_ros",
         "limo_request_navigation",
@@ -70,6 +85,7 @@ async def test_server_exposes_no_raw_ros_publish_tool() -> None:
         "limo_get_topic_info",
         "limo_sample_topic",
         "limo_get_base_state",
+        "limo_get_camera_state",
         "limo_get_laser_summary",
         "limo_get_localization_state",
         "limo_get_navigation_state",
@@ -103,7 +119,15 @@ def test_rosbridge_endpoint_honors_operator_allowlist(monkeypatch: pytest.Monkey
 
 
 @pytest.mark.parametrize(
-    "observation", ["color_image", "depth_points", "map", "global_costmap", "local_costmap"]
+    "observation",
+    [
+        "color_image",
+        "infrared_image",
+        "depth_points",
+        "map",
+        "global_costmap",
+        "local_costmap",
+    ],
 )
 def test_large_binary_raw_observations_are_denied(observation: str) -> None:
     service = LimoMCPService(gateway=object())
@@ -112,6 +136,39 @@ def test_large_binary_raw_observations_are_denied(observation: str) -> None:
         service.observe(observation, include_raw=True)
     with pytest.raises(ValueError, match="include_raw is denied"):
         service.sample(observation, include_raw=True)
+
+
+def test_camera_state_keeps_inactive_ir_optional(monkeypatch: pytest.MonkeyPatch) -> None:
+    service = LimoMCPService(gateway=object())
+    core = {
+        name: {"width": 640, "height": 480}
+        for name in (
+            "color_image",
+            "color_camera_info",
+            "depth_image",
+            "depth_camera_info",
+            "depth_points",
+        )
+    }
+    monkeypatch.setattr(
+        service,
+        "_collect_summaries",
+        lambda *_args, **_kwargs: {
+            "ok": False,
+            "summaries": core,
+            "failures": {
+                "infrared_image": {"error_code": "LIMO_OBSERVATION_FAILED"},
+                "infrared_camera_info": {"error_code": "LIMO_OBSERVATION_FAILED"},
+            },
+        },
+    )
+
+    result = service.camera_state()
+
+    assert result["ok"] is True
+    assert result["core_ready"] is True
+    assert result["core_failures"] == {}
+    assert result["optional_inactive"] == ["infrared_image", "infrared_camera_info"]
 
 
 def test_message_sampling_uses_ros_header_rate(monkeypatch: pytest.MonkeyPatch) -> None:

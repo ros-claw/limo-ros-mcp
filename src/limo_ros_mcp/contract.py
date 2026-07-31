@@ -137,15 +137,39 @@ LIMO_OBSERVATION_SPECS: dict[str, dict[str, Any]] = {
         "category": "camera",
         "required": False,
     },
+    "color_camera_info": {
+        "topic": "/camera/color/camera_info",
+        "message_type": "sensor_msgs/CameraInfo",
+        "category": "camera",
+        "required": False,
+    },
     "depth_image": {
         "topic": "/camera/depth/image_raw",
         "message_type": "sensor_msgs/Image",
         "category": "camera",
         "required": False,
     },
+    "depth_camera_info": {
+        "topic": "/camera/depth/camera_info",
+        "message_type": "sensor_msgs/CameraInfo",
+        "category": "camera",
+        "required": False,
+    },
     "depth_points": {
         "topic": "/camera/depth/points",
         "message_type": "sensor_msgs/PointCloud2",
+        "category": "camera",
+        "required": False,
+    },
+    "infrared_image": {
+        "topic": "/camera/ir/image_raw",
+        "message_type": "sensor_msgs/Image",
+        "category": "camera",
+        "required": False,
+    },
+    "infrared_camera_info": {
+        "topic": "/camera/ir/camera_info",
+        "message_type": "sensor_msgs/CameraInfo",
         "category": "camera",
         "required": False,
     },
@@ -174,7 +198,7 @@ LIMO_ERROR_FLAGS: dict[int, str] = {
 MOTION_MODE_NAMES = {0: "four_wheel_differential", 1: "ackermann", 2: "mecanum", 255: "unknown"}
 
 LIMO_INTERFACE_CONTRACT: dict[str, Any] = {
-    "schema_version": "limo_ros_mcp.interface.v2",
+    "schema_version": "limo_ros_mcp.interface.v3",
     "robot_id": "limo",
     "vendor": "AgileX Robotics",
     "ros": {
@@ -218,6 +242,39 @@ LIMO_INTERFACE_CONTRACT: dict[str, Any] = {
                 "patrol_required": bool(spec.get("patrol_required", False)),
             }
             for name, spec in LIMO_OBSERVATION_SPECS.items()
+        ],
+        {
+            "capability_id": "limo.observe.dabai_device_state",
+            "kind": "observation",
+            "ros_kind": "service_group",
+            "ros_names": [
+                "/camera/get_device_info",
+                "/camera/get_device_type",
+                "/camera/get_serial",
+                "/camera/get_version",
+                "/camera/get_ir_temperature",
+                "/camera/get_ldp_status",
+            ],
+            "read_only": True,
+            "required": False,
+            "patrol_required": False,
+        },
+        *[
+            {
+                "capability_id": capability_id,
+                "kind": "observation",
+                "host_kind": host_kind,
+                "read_only": True,
+                "required": False,
+                "patrol_required": patrol_required,
+            }
+            for capability_id, host_kind, patrol_required in (
+                ("limo.observe.peripheral_inventory", "linux_sysfs_and_ros_graph", False),
+                ("limo.observe.audio_state", "alsa_mixer", False),
+                ("limo.observe.microphone_level", "alsa_pcm_bounded_no_retention", False),
+                ("limo.observe.display_state", "linux_framebuffer_and_input", False),
+                ("limo.observe.platform_health", "linux_sysfs_and_procfs", True),
+            )
         ],
         {
             "capability_id": "limo.navigate_to_pose",
