@@ -219,6 +219,40 @@ def test_navigation_worker_waits_for_post_dispatch_amcl(monkeypatch) -> None:
     assert rospy.sleeps == 1
 
 
+def test_navigation_worker_returns_none_when_post_dispatch_amcl_is_event_silent(
+    monkeypatch,
+) -> None:
+    state = {"message": object(), "received_wall_time": 9.0}
+
+    class FakeRospy:
+        @staticmethod
+        def is_shutdown() -> bool:
+            return False
+
+        @staticmethod
+        def sleep(_duration: float) -> None:
+            pass
+
+    clock = iter([10.0, 10.0, 10.2])
+    monkeypatch.setattr(NAVIGATION.time, "time", lambda: next(clock))
+
+    observed = NAVIGATION._wait_for_post_dispatch_amcl(FakeRospy(), state, 10.0, 0.1)
+
+    assert observed is None
+
+
+def test_navigation_worker_builds_map_pose_from_live_tf() -> None:
+    observed = NAVIGATION._pose_from_transform(
+        (0.3, -0.1, 0.0),
+        (0.0, 0.0, 0.0998334166468, 0.995004165278),
+    )
+
+    assert observed["frame_id"] == "map"
+    assert observed["x"] == pytest.approx(0.3)
+    assert observed["y"] == pytest.approx(-0.1)
+    assert observed["yaw"] == pytest.approx(0.2)
+
+
 @pytest.mark.parametrize(
     ("worker", "payload"),
     [
