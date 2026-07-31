@@ -72,6 +72,7 @@ async def test_server_exposes_no_raw_ros_publish_tool() -> None:
         "limo_probe_ros",
         "limo_request_navigation",
         "limo_request_initial_pose",
+        "limo_request_tone",
         "limo_sample_topic",
         "limo_emergency_stop",
         "limo_validate_navigation_goal",
@@ -275,6 +276,9 @@ class FakeGateway:
         }
 
     async def request_initial_pose(self, **kwargs: Any) -> dict[str, Any]:
+        return await self.request_navigation(**kwargs)
+
+    async def request_tone(self, **kwargs: Any) -> dict[str, Any]:
         return await self.request_navigation(**kwargs)
 
     def prepare_operator_action(self, **kwargs: Any) -> Any:
@@ -557,7 +561,7 @@ async def test_request_navigation_submits_shadow_to_rosclawd_boundary() -> None:
 
 
 @pytest.mark.asyncio
-async def test_real_navigation_requires_daemon_owned_preflight() -> None:
+async def test_real_navigation_requires_in_context_operator_confirmation() -> None:
     gateway = FakeGateway()
     service, readiness_hash = _service_with_readiness(gateway)
 
@@ -571,9 +575,89 @@ async def test_real_navigation_requires_daemon_owned_preflight() -> None:
         execution_mode="REAL",
     )
 
-    assert result["error_code"] == "LIMO_DAEMON_PREFLIGHT_REQUIRED"
+    assert result["error_code"] == "MCP_OPERATOR_CONFIRMATION_REQUIRED"
     assert result["command_dispatched"] is False
     assert gateway.calls == []
+
+
+@pytest.mark.asyncio
+async def test_real_navigation_uses_elicitation_and_hides_permit_input() -> None:
+    gateway = FakeGateway()
+    service, readiness_hash = _service_with_readiness(gateway)
+    server = build_mcp_server(service)
+    tools = {tool.name: tool for tool in await server.list_tools()}
+    schema = tools["limo_request_navigation"].inputSchema
+    assert "approval_id" not in schema["properties"]
+    assert "principal_id" not in schema["properties"]
+
+    context = FakeElicitationContext(accepted=True)
+    result = await server._tool_manager.call_tool(
+        "limo_request_navigation",
+        {
+            "x": 1.0,
+            "y": 0.0,
+            "yaw": 0.0,
+            "body_snapshot_hash": "sha256:test-body-snapshot",
+            "readiness_snapshot_hash": readiness_hash,
+            "execution_mode": "REAL",
+            "action_id": "action-interactive-navigation",
+            "deadline_at": "2030-01-02T03:04:05Z",
+            "wait_timeout_sec": 0.0,
+        },
+        context=context,
+        convert_result=False,
+    )
+
+    assert result["state"] == "QUEUED"
+    assert result["operator_confirmation"]["permit_injected"] is True
+    assert context.messages and "mobile base will move" in context.messages[0]
+    assert [call["operation"] for call in gateway.calls] == ["prepare", "confirm"]
+    assert gateway.calls[0]["capability_id"] == "limo.navigate_to_pose"
+
+
+@pytest.mark.asyncio
+async def test_tone_shadow_and_real_confirmation_contracts() -> None:
+    gateway = FakeGateway()
+    service = LimoMCPService(gateway=gateway, goal_validator=FakeGoalValidator())
+    shadow = await service.request_tone(
+        frequency_hz=660,
+        duration_sec=0.6,
+        volume_percent=18,
+        body_snapshot_hash="sha256:test-body-snapshot",
+        execution_mode="SHADOW",
+        action_id="action-tone-shadow",
+        wait_timeout_sec=0.0,
+    )
+    assert shadow["state"] == "QUEUED"
+    assert gateway.calls[0]["capability_id"] == "limo.play_tone"
+    assert gateway.calls[0]["arguments"]["expected_effect"]["mixer_restore_required"] is True
+
+    gateway.calls.clear()
+    server = build_mcp_server(service)
+    tools = {tool.name: tool for tool in await server.list_tools()}
+    schema = tools["limo_request_tone"].inputSchema
+    assert "approval_id" not in schema["properties"]
+    assert "principal_id" not in schema["properties"]
+    result = await server._tool_manager.call_tool(
+        "limo_request_tone",
+        {
+            "body_snapshot_hash": "sha256:test-body-snapshot",
+            "frequency_hz": 660,
+            "duration_sec": 0.6,
+            "volume_percent": 18,
+            "execution_mode": "REAL",
+            "action_id": "action-tone-real",
+            "deadline_at": "2030-01-02T03:04:05Z",
+            "wait_timeout_sec": 0.0,
+        },
+        context=FakeElicitationContext(accepted=True),
+        convert_result=False,
+    )
+
+    assert result["state"] == "QUEUED"
+    assert result["operator_confirmation"]["permit_exposed"] is False
+    assert [call["operation"] for call in gateway.calls] == ["prepare", "confirm"]
+    assert gateway.calls[0]["capability_id"] == "limo.play_tone"
 
 
 @pytest.mark.asyncio

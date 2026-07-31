@@ -284,6 +284,15 @@ LIMO_INTERFACE_CONTRACT: dict[str, Any] = {
             "ros_type": "move_base_msgs/MoveBaseAction",
             "read_only": False,
             "execution_boundary": "rosclawd.request_action",
+            "worker_protocol": "rosclaw.limo.worker.v1",
+        },
+        {
+            "capability_id": "limo.play_tone",
+            "kind": "actuation",
+            "host_kind": "alsa_pcm_bounded_tone",
+            "read_only": False,
+            "execution_boundary": "rosclawd.request_action",
+            "worker_protocol": "rosclaw.limo.worker.v1",
         },
         {
             "capability_id": "limo.base.velocity_command",
@@ -319,12 +328,12 @@ LIMO_INTERFACE_CONTRACT: dict[str, Any] = {
         "readiness_reference_same_process_required": True,
         "body_snapshot_binding_required": True,
         "legacy_booleans_usable_for_real": False,
-        "real_navigation_enabled": False,
-        "real_navigation_blocker": (
-            "Daemon-owned trusted preflight and a verified executor are not implemented."
-        ),
+        "real_navigation_enabled": True,
+        "navigation_daemon_preflight_required": True,
         "real_initial_pose_enabled": True,
         "initial_pose_contract_schema": "limo.initial-pose.v1",
+        "real_tone_enabled": True,
+        "tone_contract_schema": "limo.tone.v1",
     },
     "evidence_boundary": {
         "static_contract_is_hardware_evidence": False,

@@ -893,10 +893,9 @@ class LimoMCPService:
             return validation
         if mode == "REAL":
             return self._navigation_block(
-                "LIMO_DAEMON_PREFLIGHT_REQUIRED",
-                "REAL navigation remains blocked until rosclawd owns trusted preflight and execution.",
+                "MCP_OPERATOR_CONFIRMATION_REQUIRED",
+                "REAL navigation must use the MCP in-context confirmation flow.",
             )
-
         goal = validation["normalized_goal"]
         try:
             response = await self._gateway.request_navigation(
@@ -929,6 +928,247 @@ class LimoMCPService:
             return {**response, "navigation_contract": validation}
         except Exception as exc:  # noqa: BLE001 - MCP boundary returns structured errors
             return _control_error("request_navigation", exc)
+
+    def prepare_navigation_confirmation(
+        self,
+        *,
+        x: float,
+        y: float,
+        yaw: float,
+        frame_id: str,
+        body_snapshot_hash: str,
+        readiness_snapshot_hash: str,
+        route_policy_id: str,
+        goal_tolerance_xy_m: float | None,
+        goal_tolerance_yaw_rad: float | None,
+        action_id: str,
+        deadline_at: str,
+    ) -> dict[str, Any]:
+        """Prepare one readiness-bound REAL navigation proposal for MCP elicitation."""
+
+        readiness_reference = self._validate_readiness_reference(
+            readiness_snapshot_hash, body_snapshot_hash
+        )
+        if not readiness_reference["ok"]:
+            return readiness_reference
+        validation = self._goal_validator.validate(
+            x=x,
+            y=y,
+            yaw=yaw,
+            frame_id=frame_id,
+            route_policy_id=route_policy_id,
+            goal_tolerance_xy_m=goal_tolerance_xy_m,
+            goal_tolerance_yaw_rad=goal_tolerance_yaw_rad,
+        )
+        if not validation["ok"]:
+            return validation
+        goal = validation["normalized_goal"]
+        arguments = self._navigation_arguments(goal, validation, readiness_snapshot_hash)
+        try:
+            prepared = self._gateway.prepare_operator_action(
+                capability_id="limo.navigate_to_pose",
+                arguments=arguments,
+                body_snapshot_hash=body_snapshot_hash,
+                body_id="limo",
+                action_id=action_id,
+                deadline_at=deadline_at,
+                required_evidence="TASK_VERIFIED",
+                timeout_sec=120.0,
+                display={
+                    "title": "Move LIMO to a patrol waypoint",
+                    "summary": "Run daemon-owned preflight and send one bounded move_base goal.",
+                    "target_pose": goal,
+                    "physical_effect": "The mobile base will move and then stop at the waypoint.",
+                },
+            )
+        except Exception as exc:  # noqa: BLE001 - MCP boundary returns structured errors
+            return _control_error("prepare_navigation_confirmation", exc)
+        return {
+            "ok": True,
+            "decision": "CONFIRMATION_REQUIRED",
+            "approval_request": dict(prepared.approval_request),
+            "prepared_action": prepared,
+            "navigation_contract": validation,
+            "command_dispatched": False,
+            "usable_for_real_execution": False,
+        }
+
+    @staticmethod
+    def _navigation_arguments(
+        goal: Mapping[str, Any],
+        validation: Mapping[str, Any],
+        readiness_snapshot_hash: str,
+    ) -> dict[str, Any]:
+        return {
+            "schema_version": "limo.navigation.v2",
+            "target_pose": dict(goal),
+            "readiness_snapshot_hash": readiness_snapshot_hash,
+            "route_policy_id": validation["route_policy_id"],
+            "route_policy_hash": validation["route_policy_hash"],
+            "map_id": validation["map_id"],
+            "map_image_hash": validation["map_image_hash"],
+            "goal_tolerance": validation["goal_tolerance"],
+            "expected_effect": {
+                "kind": "navigate_to_pose",
+                "final_frame": "map",
+                "stop_required": True,
+            },
+        }
+
+    @staticmethod
+    def _validate_tone(
+        *,
+        frequency_hz: int,
+        duration_sec: float,
+        volume_percent: int,
+        body_snapshot_hash: str,
+    ) -> dict[str, Any]:
+        if not str(body_snapshot_hash).strip():
+            return LimoMCPService._navigation_block(
+                "BODY_SNAPSHOT_REQUIRED",
+                "Speaker requests require an immutable LIMO body snapshot.",
+            )
+        if isinstance(frequency_hz, bool) or frequency_hz not in {440, 660, 880}:
+            return LimoMCPService._navigation_block(
+                "LIMO_TONE_FREQUENCY_INVALID",
+                "frequency_hz must be one of 440, 660, or 880.",
+            )
+        if (
+            isinstance(duration_sec, bool)
+            or not isinstance(duration_sec, (int, float))
+            or not 0.2 <= float(duration_sec) <= 1.0
+        ):
+            return LimoMCPService._navigation_block(
+                "LIMO_TONE_DURATION_INVALID",
+                "duration_sec must be within [0.2, 1.0].",
+            )
+        if (
+            isinstance(volume_percent, bool)
+            or not isinstance(volume_percent, int)
+            or not 5 <= volume_percent <= 25
+        ):
+            return LimoMCPService._navigation_block(
+                "LIMO_TONE_VOLUME_INVALID",
+                "volume_percent must be an integer within [5, 25].",
+            )
+        return {
+            "ok": True,
+            "decision": "ALLOW",
+            "normalized_tone": {
+                "frequency_hz": frequency_hz,
+                "duration_sec": float(duration_sec),
+                "volume_percent": volume_percent,
+            },
+        }
+
+    @staticmethod
+    def _tone_arguments(tone: Mapping[str, Any]) -> dict[str, Any]:
+        return {
+            "schema_version": "limo.tone.v1",
+            "frequency_hz": tone["frequency_hz"],
+            "duration_sec": tone["duration_sec"],
+            "volume_percent": tone["volume_percent"],
+            "expected_effect": {
+                "kind": "speaker_tone",
+                "playback_required": True,
+                "mixer_restore_required": True,
+            },
+        }
+
+    async def request_tone(
+        self,
+        *,
+        frequency_hz: int,
+        duration_sec: float,
+        volume_percent: int,
+        body_snapshot_hash: str,
+        execution_mode: str,
+        action_id: str | None,
+        wait_timeout_sec: float,
+    ) -> dict[str, Any]:
+        mode = str(execution_mode).upper()
+        if mode not in {"SHADOW", "REAL"}:
+            return self._navigation_block(
+                "INVALID_EXECUTION_MODE", "Only SHADOW or REAL may be submitted to rosclawd."
+            )
+        if isinstance(wait_timeout_sec, bool) or not 0.0 <= float(wait_timeout_sec) <= 30.0:
+            raise ValueError("wait_timeout_sec must be within [0, 30]")
+        validation = self._validate_tone(
+            frequency_hz=frequency_hz,
+            duration_sec=duration_sec,
+            volume_percent=volume_percent,
+            body_snapshot_hash=body_snapshot_hash,
+        )
+        if not validation["ok"]:
+            return validation
+        if mode == "REAL":
+            return self._navigation_block(
+                "MCP_OPERATOR_CONFIRMATION_REQUIRED",
+                "REAL speaker playback must use the MCP in-context confirmation flow.",
+            )
+        try:
+            response = await self._gateway.request_tone(
+                capability_id="limo.play_tone",
+                arguments=self._tone_arguments(validation["normalized_tone"]),
+                execution_mode=mode,
+                body_snapshot_hash=body_snapshot_hash,
+                body_id="limo",
+                action_id=action_id,
+                required_evidence="DRIVER_CONFIRMED",
+                timeout_sec=10.0,
+                wait_timeout_sec=float(wait_timeout_sec),
+            )
+            return {**response, "tone_contract": validation}
+        except Exception as exc:  # noqa: BLE001 - MCP boundary returns structured errors
+            return _control_error("request_tone", exc)
+
+    def prepare_tone_confirmation(
+        self,
+        *,
+        frequency_hz: int,
+        duration_sec: float,
+        volume_percent: int,
+        body_snapshot_hash: str,
+        action_id: str,
+        deadline_at: str,
+    ) -> dict[str, Any]:
+        validation = self._validate_tone(
+            frequency_hz=frequency_hz,
+            duration_sec=duration_sec,
+            volume_percent=volume_percent,
+            body_snapshot_hash=body_snapshot_hash,
+        )
+        if not validation["ok"]:
+            return validation
+        tone = validation["normalized_tone"]
+        try:
+            prepared = self._gateway.prepare_operator_action(
+                capability_id="limo.play_tone",
+                arguments=self._tone_arguments(tone),
+                body_snapshot_hash=body_snapshot_hash,
+                body_id="limo",
+                action_id=action_id,
+                deadline_at=deadline_at,
+                required_evidence="DRIVER_CONFIRMED",
+                timeout_sec=10.0,
+                display={
+                    "title": "Play a short LIMO speaker tone",
+                    "summary": "Play one bounded synthesized tone and restore the mixer state.",
+                    "tone": tone,
+                    "physical_effect": "The robot speaker will emit a short audible tone.",
+                },
+            )
+        except Exception as exc:  # noqa: BLE001 - MCP boundary returns structured errors
+            return _control_error("prepare_tone_confirmation", exc)
+        return {
+            "ok": True,
+            "decision": "CONFIRMATION_REQUIRED",
+            "approval_request": dict(prepared.approval_request),
+            "prepared_action": prepared,
+            "tone_contract": validation,
+            "command_dispatched": False,
+            "usable_for_real_execution": False,
+        }
 
     async def request_initial_pose(
         self,
@@ -1059,13 +1299,14 @@ class LimoMCPService:
             "usable_for_real_execution": False,
         }
 
-    async def confirm_prepared_initial_pose(
+    async def confirm_prepared_action(
         self,
         *,
         prepared_action: Any,
         approval_request: Mapping[str, Any],
         wait_timeout_sec: float,
         request_id: str | None,
+        operation: str,
     ) -> dict[str, Any]:
         """Submit a host-confirmed proposal while keeping the permit opaque to the Agent."""
 
@@ -1085,7 +1326,23 @@ class LimoMCPService:
                 wait_timeout_sec=wait_timeout_sec,
             )
         except Exception as exc:  # noqa: BLE001 - MCP boundary returns structured errors
-            return _control_error("confirm_initial_pose", exc)
+            return _control_error(operation, exc)
+
+    async def confirm_prepared_initial_pose(
+        self,
+        *,
+        prepared_action: Any,
+        approval_request: Mapping[str, Any],
+        wait_timeout_sec: float,
+        request_id: str | None,
+    ) -> dict[str, Any]:
+        return await self.confirm_prepared_action(
+            prepared_action=prepared_action,
+            approval_request=approval_request,
+            wait_timeout_sec=wait_timeout_sec,
+            request_id=request_id,
+            operation="confirm_initial_pose",
+        )
 
     @staticmethod
     def _initial_pose_arguments(
@@ -1142,6 +1399,72 @@ def build_mcp_server(service: LimoMCPService | None = None) -> FastMCP:
             "rosclawd."
         ),
     )
+
+    async def complete_real_confirmation(
+        ctx: Context[Any, Any, Any],
+        proposal: dict[str, Any],
+        *,
+        message: str,
+        contract_key: str,
+        operation: str,
+        wait_timeout_sec: float,
+    ) -> dict[str, Any]:
+        prepared_action = proposal.pop("prepared_action", None)
+        approval_request = proposal.get("approval_request")
+        if proposal.get("ok") is not True or prepared_action is None:
+            return proposal
+        if not isinstance(approval_request, dict):
+            return _control_error(
+                operation,
+                RuntimeError("ROSClaw returned no operator confirmation request"),
+            )
+        if not _client_supports_form_elicitation(ctx):
+            return {
+                **_control_error(
+                    "operator_confirmation",
+                    RuntimeError("MCP client does not advertise form elicitation"),
+                ),
+                "error_code": "MCP_ELICITATION_UNAVAILABLE",
+                "approval_request": approval_request,
+                "message": (
+                    "This MCP client cannot render the required operator confirmation. "
+                    "Use a client with MCP form elicitation enabled and retry."
+                ),
+            }
+        try:
+            elicited = await ctx.elicit(message=message, schema=LimoOperatorConfirmation)
+        except Exception as exc:  # noqa: BLE001 - unsupported clients fail closed
+            return {
+                **_control_error("operator_confirmation", exc),
+                "error_code": "MCP_ELICITATION_UNAVAILABLE",
+                "approval_request": approval_request,
+                "message": (
+                    "This MCP client did not complete the operator confirmation. "
+                    "Enable MCP elicitations and retry the same tool call."
+                ),
+            }
+        confirmation_data = getattr(elicited, "data", None)
+        accepted = str(elicited.action) == "accept" and bool(
+            getattr(confirmation_data, "confirm", False)
+        )
+        if not accepted:
+            return {
+                "ok": False,
+                "decision": "CANCELLED",
+                "error_code": "OPERATOR_CONFIRMATION_DECLINED",
+                "message": "The operator declined or cancelled the REAL action.",
+                "approval_request": approval_request,
+                "command_dispatched": False,
+                "usable_for_real_execution": False,
+            }
+        result = await implementation.confirm_prepared_action(
+            prepared_action=prepared_action,
+            approval_request=approval_request,
+            wait_timeout_sec=wait_timeout_sec,
+            request_id=str(ctx.request_id),
+            operation=operation,
+        )
+        return {**result, contract_key: proposal.get(contract_key)}
 
     @mcp.tool(description="Return the source-backed LIMO ROS interface and safety contract.")
     def limo_get_contract() -> dict[str, Any]:
@@ -1450,11 +1773,12 @@ def build_mcp_server(service: LimoMCPService | None = None) -> FastMCP:
 
     @mcp.tool(
         description=(
-            "Submit a validated LIMO move_base goal to rosclawd. Defaults to SHADOW; "
-            "REAL remains authorization- and executor-gated by the daemon."
+            "Submit a validated LIMO move_base goal to rosclawd. REAL runs daemon-owned "
+            "preflight and uses an in-context single-action operator confirmation."
         )
     )
     async def limo_request_navigation(
+        ctx: Context[Any, Any, Any],
         x: float,
         y: float,
         yaw: float,
@@ -1465,11 +1789,46 @@ def build_mcp_server(service: LimoMCPService | None = None) -> FastMCP:
         goal_tolerance_xy_m: float | None = None,
         goal_tolerance_yaw_rad: float | None = None,
         execution_mode: str = "SHADOW",
-        principal_id: str = "",
-        approval_id: str | None = None,
         action_id: str | None = None,
+        deadline_at: str | None = None,
         wait_timeout_sec: float = 2.0,
     ) -> dict[str, Any]:
+        if str(execution_mode).upper() == "REAL":
+            exact_action_id = action_id or f"action_limo_navigation_{uuid.uuid4().hex}"
+            exact_deadline = deadline_at or (
+                datetime.now(UTC) + timedelta(seconds=150)
+            ).isoformat().replace("+00:00", "Z")
+            proposal = implementation.prepare_navigation_confirmation(
+                x=x,
+                y=y,
+                yaw=yaw,
+                frame_id=frame_id,
+                body_snapshot_hash=body_snapshot_hash,
+                readiness_snapshot_hash=readiness_snapshot_hash,
+                route_policy_id=route_policy_id,
+                goal_tolerance_xy_m=goal_tolerance_xy_m,
+                goal_tolerance_yaw_rad=goal_tolerance_yaw_rad,
+                action_id=exact_action_id,
+                deadline_at=exact_deadline,
+            )
+            approval = proposal.get("approval_request", {})
+            display = approval.get("display", {}) if isinstance(approval, dict) else {}
+            message = (
+                "Confirm one REAL LIMO action\n"
+                "Robot: limo\n"
+                "Action: move to one patrol waypoint (/move_base)\n"
+                f"Target: {display.get('target_pose')}\n"
+                f"Deadline: {approval.get('deadline_at') if isinstance(approval, dict) else None}\n"
+                "Effect: the mobile base will move and then stop."
+            )
+            return await complete_real_confirmation(
+                ctx,
+                proposal,
+                message=message,
+                contract_key="navigation_contract",
+                operation="confirm_navigation",
+                wait_timeout_sec=wait_timeout_sec,
+            )
         return await implementation.request_navigation(
             x=x,
             y=y,
@@ -1481,8 +1840,64 @@ def build_mcp_server(service: LimoMCPService | None = None) -> FastMCP:
             goal_tolerance_xy_m=goal_tolerance_xy_m,
             goal_tolerance_yaw_rad=goal_tolerance_yaw_rad,
             execution_mode=execution_mode,
-            principal_id=principal_id,
-            approval_id=approval_id,
+            action_id=action_id,
+            wait_timeout_sec=wait_timeout_sec,
+        )
+
+    @mcp.tool(
+        description=(
+            "Play one bounded synthesized tone through the LIMO USB speaker via rosclawd. "
+            "REAL uses an in-context single-action confirmation and restores mixer state."
+        )
+    )
+    async def limo_request_tone(
+        ctx: Context[Any, Any, Any],
+        body_snapshot_hash: str,
+        frequency_hz: int = 660,
+        duration_sec: float = 0.6,
+        volume_percent: int = 18,
+        execution_mode: str = "SHADOW",
+        action_id: str | None = None,
+        deadline_at: str | None = None,
+        wait_timeout_sec: float = 2.0,
+    ) -> dict[str, Any]:
+        if str(execution_mode).upper() == "REAL":
+            exact_action_id = action_id or f"action_limo_tone_{uuid.uuid4().hex}"
+            exact_deadline = deadline_at or (
+                datetime.now(UTC) + timedelta(seconds=120)
+            ).isoformat().replace("+00:00", "Z")
+            proposal = implementation.prepare_tone_confirmation(
+                frequency_hz=frequency_hz,
+                duration_sec=duration_sec,
+                volume_percent=volume_percent,
+                body_snapshot_hash=body_snapshot_hash,
+                action_id=exact_action_id,
+                deadline_at=exact_deadline,
+            )
+            approval = proposal.get("approval_request", {})
+            display = approval.get("display", {}) if isinstance(approval, dict) else {}
+            message = (
+                "Confirm one REAL LIMO action\n"
+                "Robot: limo\n"
+                "Action: play one short speaker tone\n"
+                f"Tone: {display.get('tone')}\n"
+                f"Deadline: {approval.get('deadline_at') if isinstance(approval, dict) else None}\n"
+                "Effect: the robot speaker will emit a short audible tone."
+            )
+            return await complete_real_confirmation(
+                ctx,
+                proposal,
+                message=message,
+                contract_key="tone_contract",
+                operation="confirm_tone",
+                wait_timeout_sec=wait_timeout_sec,
+            )
+        return await implementation.request_tone(
+            frequency_hz=frequency_hz,
+            duration_sec=duration_sec,
+            volume_percent=volume_percent,
+            body_snapshot_hash=body_snapshot_hash,
+            execution_mode=execution_mode,
             action_id=action_id,
             wait_timeout_sec=wait_timeout_sec,
         )

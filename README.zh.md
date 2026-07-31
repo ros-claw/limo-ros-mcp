@@ -1,6 +1,6 @@
 # limo-ros-mcp
 
-AgileX LIMO ROS 1 的独立巡检 MCP 服务。它把 `limo_ros` 的底盘、激光、定位、导航、地图、诊断、TF、RGB-D、音频、显示和 Jetson 主机接口转换成 29 个 Codex 可调用工具，并把会改变机器人状态的请求交给 ROSClaw 守护进程。
+AgileX LIMO ROS 1 的独立巡检 MCP 服务。它把 `limo_ros` 的底盘、激光、定位、导航、地图、诊断、TF、RGB-D、音频、显示和 Jetson 主机接口转换成 30 个 Codex 可调用工具，并把会改变机器人状态的请求交给 ROSClaw 守护进程。
 
 本次真机接口验证、动态状态和巡检前置问题记录在
 [`docs/ROS_INSPECTION_READINESS.md`](docs/ROS_INSPECTION_READINESS.md)。
@@ -22,7 +22,7 @@ USB、音频、显示、触摸屏、相机健康与 Jetson 证据边界详见
 - REAL 必须具备 daemon-owned 可信 preflight、守护进程签发的许可、已验证执行器以及最终执行回执。
 - `limo_request_initial_pose(execution_mode="REAL")` 会在同一次 MCP 调用里显示精确动作确认；接受后 permit 由 ROSClaw 内部注入，Agent 不再填写或看到 permit ID。
 - `limo_get_patrol_readiness` 返回带 SHA-256 封印的 `limo.readiness.v1`：默认 5 秒有效期，包含 policy hash、观测接收时间、稳定检查项、blocker 与 warning。
-- 调用者自报的 readiness 布尔值已经删除。当前只有通过 v2 校验的 SHADOW 请求能进入 gateway；daemon-owned preflight 和执行器完成前，REAL 一律 fail closed。
+- 调用者自报的 readiness 布尔值已经删除。REAL 导航会在守护进程内重新检查 AMCL、雷达、底盘状态、TF 和 move_base，并通过对话框确认精确目标。
 
 ## 工具
 
@@ -33,7 +33,7 @@ USB、音频、显示、触摸屏、相机健康与 Jetson 证据边界详见
 | 巡检快照 | `limo_get_base_state`、`limo_get_laser_summary`、`limo_get_localization_state`、`limo_get_navigation_state`、`limo_get_map_summary`、`limo_get_diagnostics`、`limo_get_transform_state`、`limo_get_patrol_readiness` |
 | 相机与外设 | `limo_get_camera_state`、`limo_get_dabai_device_state`、`limo_list_peripherals`、`limo_get_audio_state`、`limo_measure_microphone`、`limo_get_display_state`、`limo_get_platform_health` |
 | 参数验证 | `limo_validate_navigation_goal`、`limo_validate_velocity_command` |
-| ROSClaw 控制面 | `limo_get_runtime_status`、`limo_request_navigation`、`limo_request_initial_pose`、`limo_get_action_status`、`limo_get_execution_receipt`、`limo_emergency_stop` |
+| ROSClaw 控制面 | `limo_get_runtime_status`、`limo_request_navigation`、`limo_request_initial_pose`、`limo_request_tone`、`limo_get_action_status`、`limo_get_execution_receipt`、`limo_emergency_stop` |
 
 ## 安装与 Codex 接入
 
@@ -90,9 +90,11 @@ roslaunch rosbridge_server rosbridge_websocket.launch port:=9090
 
 准备度证据、导航契约与 fail-closed 语义详见 [`docs/READINESS_EVIDENCE_V1.md`](docs/READINESS_EVIDENCE_V1.md) 和 [`docs/NAVIGATION_CONTRACT_V2.md`](docs/NAVIGATION_CONTRACT_V2.md)。Readiness snapshot 只是关联证据，不能替代 daemon 在 dispatch 前重新执行的可信 preflight。
 
-本版本可以观测扬声器增益，但不能直接修改。上游驱动没有提供前置 OLED 或车身 RGB
-灯接口，真机也没有枚举出独立功放的电源、温度或故障接口，因此这些外设会明确返回
-`declared_unbound`，不会用猜测出来的命令冒充支持。
+本版本除观测扬声器增益外，还提供 `limo_request_tone`：仅允许
+440/660/880 Hz、0.2–1.0 秒、5–25% 临时音量的合成短音。固定版本的守护进程执行器
+只选择唯一的 USB PnP 声卡，播放后恢复原混音状态，不接收文件、命令、混音器名称或
+设备参数。上游驱动仍没有提供前置 OLED 或车身 RGB 灯接口，真机也没有枚举出独立功放
+的电源、温度或故障接口。
 
 ## 上游来源
 

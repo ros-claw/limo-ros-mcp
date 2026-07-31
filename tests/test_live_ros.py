@@ -242,7 +242,7 @@ async def test_live_mcp_peripheral_protocol() -> None:
                 await session.initialize()
                 listed = await session.list_tools()
                 names = {tool.name for tool in listed.tools}
-                assert len(names) == 29
+                assert len(names) == 30
                 calls = (
                     ("limo_list_peripherals", {}),
                     ("limo_get_audio_state", {}),

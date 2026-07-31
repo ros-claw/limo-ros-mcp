@@ -5,7 +5,7 @@ are a point-in-time observation, not a permanent robot claim or proof of motion.
 
 ## Implemented interface
 
-- 29 MCP tools and 27 named ROS observation contracts.
+- 30 MCP tools and 27 named ROS observation contracts.
 - ROS graph discovery and per-topic type/publisher/subscriber inspection.
 - Bounded 1-10 message sampling with ROS-header rate estimation.
 - Compact parsers for LIMO status, odometry, IMU, LaserScan, AMCL pose, move_base status,
@@ -18,6 +18,8 @@ are a point-in-time observation, not a permanent robot claim or proof of motion.
   publisher was added.
 - REAL initial-pose setup uses MCP elicitation and internal one-shot authorization injection;
   permit identifiers are not part of the Agent-facing tool schema or result.
+- REAL navigation and bounded Speaker tones use the same confirmation boundary and fixed daemon
+  workers; no generic ROS action, ALSA device, file, or mixer surface is exposed.
 
 ## Reproducible checks
 
@@ -111,9 +113,9 @@ The live host additionally confirmed the following patrol-relevant devices and i
 
 The USB sound card exposes Speaker gain/mute and microphone capture gain. No independent physical
 amplifier power, temperature, or fault interface was enumerated. The MCP therefore observes these
-controls but does not invent an amplifier-control contract. The one-second live microphone test
-analyzed PCM samples in memory and returned only level statistics; no recording was retained or
-returned.
+controls and adds only a bounded synthesized-tone action, not an amplifier-control contract. The
+one-second live microphone test analyzed PCM samples in memory and returned only level statistics;
+no recording was retained or returned.
 
 ## Next patrol experiment sequence
 
