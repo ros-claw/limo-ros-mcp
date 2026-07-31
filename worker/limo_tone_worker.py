@@ -25,7 +25,10 @@ PROTOCOL = "rosclaw.limo.worker.v1"
 SCHEMA = "limo.tone.v1"
 MAX_REQUEST_BYTES = 65536
 SAMPLE_RATE_HZ = 16000
-MAX_AMPLITUDE = 0.25
+# The requested volume is applied once to the synthesized PCM.  The selected
+# output is temporarily placed at a reference gain and then restored exactly.
+MAX_AMPLITUDE = 0.9
+PULSE_REFERENCE_VOLUME = 65536
 ALLOWED_FREQUENCIES_HZ = (440, 660, 880)
 ALLOWED_USB_CARD_NAMES = ("USB PnP Audio Device", "USB PnP Sound Device")
 PULSE_SINK_PATTERN = re.compile(
@@ -148,16 +151,18 @@ def _speaker_state(card):
     return int(percent), switch == "on"
 
 
-def _set_speaker_state(card, percent, unmuted):
+def _set_speaker_state(card, percent, unmuted, mapped=False):
     switch = "unmute" if unmuted else "mute"
-    code, _stdout, stderr = _run(
-        ["/usr/bin/amixer", "-c", str(card), "sset", "Speaker", "%d%%" % percent, switch]
-    )
+    command = ["/usr/bin/amixer"]
+    if mapped:
+        command.append("-M")
+    command.extend(["-c", str(card), "sset", "Speaker", "%d%%" % percent, switch])
+    code, _stdout, stderr = _run(command)
     if code != 0:
         raise RequestError("cannot set Speaker mixer: %s" % stderr.strip())
 
 
-def _tone_wav(frequency_hz, duration_sec):
+def _tone_wav(frequency_hz, duration_sec, volume_percent):
     frame_count = int(round(SAMPLE_RATE_HZ * duration_sec))
     frames = []
     fade_frames = min(int(SAMPLE_RATE_HZ * 0.02), frame_count // 2)
@@ -171,6 +176,8 @@ def _tone_wav(frequency_hz, duration_sec):
         value = int(
             32767.0
             * MAX_AMPLITUDE
+            * volume_percent
+            / 100.0
             * envelope
             * math.sin(2.0 * math.pi * frequency_hz * index / SAMPLE_RATE_HZ)
         )
@@ -209,6 +216,55 @@ def _pulse_sink(server):
     return matches[0]
 
 
+def _pulse_sink_state(server, sink):
+    code, stdout, stderr = _run(["/usr/bin/pactl", "--server", server, "list", "sinks"])
+    if code != 0:
+        raise RequestError("cannot read PulseAudio sink state: %s" % stderr.strip())
+    if not isinstance(stdout, str):
+        stdout = stdout.decode("utf-8", "replace")
+    for block in re.split(r"(?m)^Sink #\d+\s*$", stdout):
+        name = re.search(r"(?m)^\s*Name:\s*(\S+)\s*$", block)
+        if name is None or name.group(1) != sink:
+            continue
+        mute = re.search(r"(?m)^\s*Mute:\s*(yes|no)\s*$", block)
+        volume = re.search(r"(?m)^\s*Volume:\s*(.+)$", block)
+        if mute is None or volume is None:
+            raise RequestError("cannot parse PulseAudio sink state")
+        channel_volumes = [int(value) for value in re.findall(r":\s*(\d+)\s*/", volume.group(1))]
+        if not channel_volumes:
+            raise RequestError("cannot parse PulseAudio sink channel volumes")
+        return {
+            "channel_volumes": channel_volumes,
+            "unmuted": mute.group(1) == "no",
+        }
+    raise RequestError("allowlisted PulseAudio sink state is unavailable")
+
+
+def _set_pulse_sink_state(server, sink, channel_volumes, unmuted):
+    volume_command = [
+        "/usr/bin/pactl",
+        "--server",
+        server,
+        "set-sink-volume",
+        sink,
+    ] + [str(value) for value in channel_volumes]
+    code, _stdout, stderr = _run(volume_command)
+    if code != 0:
+        raise RequestError("cannot set PulseAudio sink volume: %s" % stderr.strip())
+    code, _stdout, stderr = _run(
+        [
+            "/usr/bin/pactl",
+            "--server",
+            server,
+            "set-sink-mute",
+            sink,
+            "0" if unmuted else "1",
+        ]
+    )
+    if code != 0:
+        raise RequestError("cannot set PulseAudio sink mute: %s" % stderr.strip())
+
+
 def _play_tone(card, wav_bytes):
     server = _pulse_server()
     if server is not None:
@@ -242,16 +298,45 @@ def _play_tone(card, wav_bytes):
 
 def _run_audio(request):
     card = _usb_audio_card()
-    original_percent, original_unmuted = _speaker_state(card)
-    wav_bytes, frame_count = _tone_wav(request["frequency_hz"], request["duration_sec"])
+    wav_bytes, frame_count = _tone_wav(
+        request["frequency_hz"], request["duration_sec"], request["volume_percent"]
+    )
     started = time.time()
     restored = False
-    try:
-        _set_speaker_state(card, request["volume_percent"], True)
-        playback_backend, device = _play_tone(card, wav_bytes)
-    finally:
-        _set_speaker_state(card, original_percent, original_unmuted)
-        restored = True
+    server = _pulse_server()
+    if server is not None:
+        sink = _pulse_sink(server)
+        original_state = _pulse_sink_state(server, sink)
+        reference_volumes = [PULSE_REFERENCE_VOLUME] * len(original_state["channel_volumes"])
+        try:
+            _set_pulse_sink_state(server, sink, reference_volumes, True)
+            playback_backend, device = _play_tone(card, wav_bytes)
+        finally:
+            _set_pulse_sink_state(
+                server,
+                sink,
+                original_state["channel_volumes"],
+                original_state["unmuted"],
+            )
+            restored = True
+        original_output_state = {
+            "backend": "pulseaudio",
+            "channel_volumes": original_state["channel_volumes"],
+            "unmuted": original_state["unmuted"],
+        }
+    else:
+        original_percent, original_unmuted = _speaker_state(card)
+        try:
+            _set_speaker_state(card, 100, True, mapped=True)
+            playback_backend, device = _play_tone(card, wav_bytes)
+        finally:
+            _set_speaker_state(card, original_percent, original_unmuted)
+            restored = True
+        original_output_state = {
+            "backend": "alsa",
+            "volume_percent": original_percent,
+            "unmuted": original_unmuted,
+        }
     return {
         "protocol": PROTOCOL,
         "ok": True,
@@ -266,13 +351,13 @@ def _run_audio(request):
         "volume_percent": request["volume_percent"],
         "sample_rate_hz": SAMPLE_RATE_HZ,
         "frame_count": frame_count,
+        "volume_mapping": "pcm_linear_percent",
+        "digital_peak_scale": MAX_AMPLITUDE * request["volume_percent"] / 100.0,
+        "reference_output_gain_percent": 100,
         "started_wall_time": started,
         "completed_wall_time": time.time(),
         "mixer_restored": restored,
-        "original_speaker_state": {
-            "volume_percent": original_percent,
-            "unmuted": original_unmuted,
-        },
+        "original_output_state": original_output_state,
     }
 
 

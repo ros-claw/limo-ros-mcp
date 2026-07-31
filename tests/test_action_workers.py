@@ -181,6 +181,50 @@ def test_tone_worker_rejects_ambiguous_pulseaudio_sinks(monkeypatch) -> None:
         TONE._pulse_sink("unix:/run/user/1000/pulse/native")
 
 
+def test_tone_worker_uses_reference_gain_and_restores_alsa_state(monkeypatch) -> None:
+    calls: list[tuple[int, int, bool, bool]] = []
+    monkeypatch.setattr(TONE, "_usb_audio_card", lambda: 2)
+    monkeypatch.setattr(TONE, "_pulse_server", lambda: None)
+    monkeypatch.setattr(TONE, "_speaker_state", lambda _card: (0, True))
+    monkeypatch.setattr(
+        TONE,
+        "_set_speaker_state",
+        lambda card, percent, unmuted, mapped=False: calls.append((card, percent, unmuted, mapped)),
+    )
+    monkeypatch.setattr(TONE, "_play_tone", lambda _card, _wav: ("alsa", "plughw:2,0"))
+
+    result = TONE._run_audio(_tone_request())
+
+    assert calls == [(2, 100, True, True), (2, 0, True, False)]
+    assert result["volume_mapping"] == "pcm_linear_percent"
+    assert result["digital_peak_scale"] == pytest.approx(0.162)
+    assert result["reference_output_gain_percent"] == 100
+
+
+def test_tone_worker_parses_and_restores_pulseaudio_sink_state(monkeypatch) -> None:
+    inventory = b"""Sink #1
+\tName: alsa_output.usb-0c76_USB_PnP_Audio_Device-00.analog-stereo
+\tMute: no
+\tVolume: front-left: 5841 / 9% / -63.00 dB, front-right: 5841 / 9% / -63.00 dB
+"""
+    monkeypatch.setattr(TONE, "_run", lambda *_args, **_kwargs: (0, inventory, b""))
+
+    state = TONE._pulse_sink_state(
+        "unix:/run/user/1000/pulse/native",
+        "alsa_output.usb-0c76_USB_PnP_Audio_Device-00.analog-stereo",
+    )
+
+    assert state == {"channel_volumes": [5841, 5841], "unmuted": True}
+
+
+def test_tone_wave_avoids_double_attenuation() -> None:
+    wav_bytes, frame_count = TONE._tone_wav(660, 0.6, 18)
+
+    assert frame_count == 9600
+    assert len(wav_bytes) > frame_count * 2
+    assert pytest.approx(0.9) == TONE.MAX_AMPLITUDE
+
+
 def test_navigation_worker_rejects_non_map_and_unbounded_timeout() -> None:
     wrong_frame = _navigation_request()
     wrong_frame["target_pose"] = {"frame_id": "odom", "x": 0.0, "y": 0.0, "yaw": 0.0}
@@ -251,6 +295,32 @@ def test_navigation_worker_builds_map_pose_from_live_tf() -> None:
     assert observed["x"] == pytest.approx(0.3)
     assert observed["y"] == pytest.approx(-0.1)
     assert observed["yaw"] == pytest.approx(0.2)
+
+
+def test_navigation_worker_classifies_already_satisfied_goal_and_motion() -> None:
+    before = {"frame_id": "map", "x": 0.17, "y": 0.0, "yaw": 0.0}
+    after = {"frame_id": "map", "x": 0.18, "y": 0.0, "yaw": 0.01}
+
+    translation, rotation = NAVIGATION._pose_delta(before, after)
+
+    assert translation == pytest.approx(0.01)
+    assert rotation == pytest.approx(0.01)
+    assert translation < NAVIGATION.MIN_OBSERVED_TRANSLATION_M
+    assert rotation < NAVIGATION.MIN_OBSERVED_ROTATION_RAD
+
+
+def test_navigation_worker_reads_active_trajectory_planner_tolerance() -> None:
+    class FakeRospy:
+        @staticmethod
+        def get_param(name: str, default: float) -> float:
+            return {
+                "/move_base/TrajectoryPlannerROS/xy_goal_tolerance": 0.2,
+                "/move_base/TrajectoryPlannerROS/yaw_goal_tolerance": 0.15,
+            }.get(name, default)
+
+    tolerance = NAVIGATION._active_goal_tolerance(FakeRospy(), {"xy_m": 0.1, "yaw_rad": 0.1})
+
+    assert tolerance == {"xy_m": 0.2, "yaw_rad": 0.15}
 
 
 @pytest.mark.parametrize(
