@@ -289,7 +289,7 @@ LIMO_INTERFACE_CONTRACT: dict[str, Any] = {
         {
             "capability_id": "limo.play_tone",
             "kind": "actuation",
-            "host_kind": "alsa_pcm_bounded_tone",
+            "host_kind": "alsa_pcm_bounded_tone_with_microphone_loopback",
             "read_only": False,
             "execution_boundary": "rosclawd.request_action",
             "worker_protocol": "rosclaw.limo.worker.v1",
@@ -334,6 +334,7 @@ LIMO_INTERFACE_CONTRACT: dict[str, Any] = {
         "initial_pose_contract_schema": "limo.initial-pose.v1",
         "real_tone_enabled": True,
         "tone_contract_schema": "limo.tone.v1",
+        "tone_microphone_loopback_required": True,
     },
     "evidence_boundary": {
         "static_contract_is_hardware_evidence": False,

@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import math
 import os
+import struct
 import subprocess
 import sys
 from io import StringIO
@@ -41,6 +43,21 @@ def _tone_request() -> dict[str, object]:
         "duration_sec": 0.6,
         "volume_percent": 18,
     }
+
+
+def _raw_tone(frequency_hz: int, duration_sec: float, amplitude: float) -> bytes:
+    frames = int(TONE.SAMPLE_RATE_HZ * duration_sec)
+    return b"".join(
+        struct.pack(
+            "<h",
+            int(
+                32767
+                * amplitude
+                * math.sin(2.0 * math.pi * frequency_hz * index / TONE.SAMPLE_RATE_HZ)
+            ),
+        )
+        for index in range(frames)
+    )
 
 
 def _navigation_request() -> dict[str, object]:
@@ -191,7 +208,16 @@ def test_tone_worker_uses_reference_gain_and_restores_alsa_state(monkeypatch) ->
         "_set_speaker_state",
         lambda card, percent, unmuted, mapped=False: calls.append((card, percent, unmuted, mapped)),
     )
-    monkeypatch.setattr(TONE, "_play_tone", lambda _card, _wav: ("alsa", "plughw:2,0"))
+    monkeypatch.setattr(
+        TONE,
+        "_capture_pcm",
+        lambda _card, _duration: _raw_tone(440, 1.0, 0.0001),
+    )
+    monkeypatch.setattr(
+        TONE,
+        "_capture_during_playback",
+        lambda _card, _wav: ("alsa", "plughw:2,0", _raw_tone(660, 2.0, 0.1)),
+    )
 
     result = TONE._run_audio(_tone_request())
 
@@ -199,6 +225,8 @@ def test_tone_worker_uses_reference_gain_and_restores_alsa_state(monkeypatch) ->
     assert result["volume_mapping"] == "pcm_linear_percent"
     assert result["digital_peak_scale"] == pytest.approx(0.162)
     assert result["reference_output_gain_percent"] == 100
+    assert result["acoustic_loopback_detected"] is True
+    assert result["acoustic_loopback"]["audio_retained"] is False
 
 
 def test_tone_worker_parses_and_restores_pulseaudio_sink_state(monkeypatch) -> None:
@@ -223,6 +251,28 @@ def test_tone_wave_avoids_double_attenuation() -> None:
     assert frame_count == 9600
     assert len(wav_bytes) > frame_count * 2
     assert pytest.approx(0.9) == TONE.MAX_AMPLITUDE
+
+
+def test_tone_loopback_detects_target_frequency_gain() -> None:
+    baseline = _raw_tone(440, 1.0, 0.001)
+    observed = _raw_tone(660, 2.0, 0.08)
+
+    evidence = TONE._loopback_evidence(baseline, observed, 660, 2)
+
+    assert evidence["detected"] is True
+    assert evidence["capture_device"] == "plughw:2,0"
+    assert evidence["target_gain_db"] >= 30.0
+    assert evidence["during_playback"]["target_prominence_db"] >= 30.0
+    assert evidence["audio_content_returned"] is False
+
+
+def test_tone_loopback_rejects_unrelated_loud_audio() -> None:
+    baseline = _raw_tone(440, 1.0, 0.001)
+    observed = _raw_tone(880, 2.0, 0.2)
+
+    evidence = TONE._loopback_evidence(baseline, observed, 660, 2)
+
+    assert evidence["detected"] is False
 
 
 def test_navigation_worker_rejects_non_map_and_unbounded_timeout() -> None:
