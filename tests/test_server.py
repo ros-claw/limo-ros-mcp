@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import time
+import tomllib
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -15,6 +18,14 @@ from limo_ros_mcp.server import (
     LimoMCPService,
     build_mcp_server,
 )
+
+
+def test_package_and_manifest_versions_match() -> None:
+    root = Path(__file__).parents[1]
+    manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
+    project = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+
+    assert manifest["version"] == project["project"]["version"]
 
 
 def test_dabai_camera_contract_uses_live_astra_topics() -> None:
