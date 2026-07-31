@@ -113,6 +113,74 @@ def test_tone_worker_accepts_known_usb_audio_card_names(monkeypatch, card_name: 
     assert TONE._usb_audio_card() == 2
 
 
+def test_tone_worker_uses_allowlisted_pulseaudio_sink(monkeypatch) -> None:
+    calls: list[tuple[list[str], bytes | None]] = []
+
+    def fake_run(command, input_bytes=None, env=None):
+        del env
+        calls.append((command, input_bytes))
+        if command[0] == "/usr/bin/pactl":
+            return (
+                0,
+                (
+                    b"0\talsa_output.platform-sound.analog-stereo\tmodule-alsa-card.c\n"
+                    b"1\talsa_output.usb-0c76_USB_PnP_Audio_Device-00.analog-stereo"
+                    b"\tmodule-alsa-card.c\n"
+                ),
+                b"",
+            )
+        return 0, b"", b""
+
+    monkeypatch.setattr(TONE, "_pulse_server", lambda: "unix:/run/user/1000/pulse/native")
+    monkeypatch.setattr(TONE, "_run", fake_run)
+
+    backend, device = TONE._play_tone(2, b"RIFF-test")
+
+    assert backend == "pulseaudio"
+    assert device == "pulse:alsa_output.usb-0c76_USB_PnP_Audio_Device-00.analog-stereo"
+    assert calls[1][0] == [
+        "/usr/bin/paplay",
+        "--server",
+        "unix:/run/user/1000/pulse/native",
+        "--device",
+        "alsa_output.usb-0c76_USB_PnP_Audio_Device-00.analog-stereo",
+        "--client-name",
+        "rosclaw-limo-tone",
+        "--stream-name",
+        "bounded-tone",
+    ]
+    assert calls[1][1] == b"RIFF-test"
+
+
+def test_tone_worker_falls_back_to_fixed_alsa_device(monkeypatch) -> None:
+    calls: list[tuple[list[str], bytes | None]] = []
+
+    def fake_run(command, input_bytes=None, env=None):
+        del env
+        calls.append((command, input_bytes))
+        return 0, b"", b""
+
+    monkeypatch.setattr(TONE, "_pulse_server", lambda: None)
+    monkeypatch.setattr(TONE, "_run", fake_run)
+
+    backend, device = TONE._play_tone(2, b"RIFF-test")
+
+    assert backend == "alsa"
+    assert device == "plughw:2,0"
+    assert calls == [(["/usr/bin/aplay", "-q", "-D", "plughw:2,0"], b"RIFF-test")]
+
+
+def test_tone_worker_rejects_ambiguous_pulseaudio_sinks(monkeypatch) -> None:
+    inventory = (
+        b"1\talsa_output.usb-0c76_USB_PnP_Audio_Device-00.analog-stereo\tmodule\n"
+        b"2\talsa_output.usb-0c76_USB_PnP_Sound_Device-00.analog-stereo\tmodule\n"
+    )
+    monkeypatch.setattr(TONE, "_run", lambda *_args, **_kwargs: (0, inventory, b""))
+
+    with pytest.raises(TONE.RequestError, match="exactly one"):
+        TONE._pulse_sink("unix:/run/user/1000/pulse/native")
+
+
 def test_navigation_worker_rejects_non_map_and_unbounded_timeout() -> None:
     wrong_frame = _navigation_request()
     wrong_frame["target_pose"] = {"frame_id": "odom", "x": 0.0, "y": 0.0, "yaw": 0.0}
@@ -122,6 +190,33 @@ def test_navigation_worker_rejects_non_map_and_unbounded_timeout() -> None:
         NAVIGATION.validate_request(wrong_frame)
     with pytest.raises(NAVIGATION.RequestError, match="navigation_timeout_sec"):
         NAVIGATION.validate_request(long_timeout)
+
+
+def test_navigation_worker_waits_for_post_dispatch_amcl(monkeypatch) -> None:
+    before = object()
+    after = object()
+    state = {"message": before, "received_wall_time": 9.0}
+
+    class FakeRospy:
+        sleeps = 0
+
+        @staticmethod
+        def is_shutdown() -> bool:
+            return False
+
+        def sleep(self, _duration: float) -> None:
+            self.sleeps += 1
+            state["message"] = after
+            state["received_wall_time"] = 10.1
+
+    clock = iter([10.0, 10.0, 10.2])
+    monkeypatch.setattr(NAVIGATION.time, "time", lambda: next(clock))
+    rospy = FakeRospy()
+
+    observed = NAVIGATION._wait_for_post_dispatch_amcl(rospy, state, 10.0, 1.0)
+
+    assert observed is after
+    assert rospy.sleeps == 1
 
 
 @pytest.mark.parametrize(

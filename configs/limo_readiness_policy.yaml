@@ -15,9 +15,9 @@ critical_observations:
   - tf
 thresholds:
   # The Melodic LIMO driver stamp trails local receipt by roughly 0.7 s; the
-  # bounded concurrent evidence window adds up to ~1.5 s on the onboard ARM CPU.
+  # bounded concurrent evidence window adds up to ~1.7 s on the onboard ARM CPU.
   status_fresh_sec: 3.0
-  odom_fresh_sec: 2.0
+  odom_fresh_sec: 3.0
   imu_fresh_sec: 2.0
   laser_fresh_sec: 2.0
   amcl_fresh_sec: 5.0
@@ -49,7 +49,10 @@ severities:
   LASER_VALID_RATIO: BLOCK
   FRONT_CLEARANCE: BLOCK
   AMCL_AVAILABLE: BLOCK
-  AMCL_FRESH: BLOCK
+  # AMCL publishes when its pose update thresholds are crossed, not as a
+  # heartbeat while the base is stationary. Availability, bounded covariance,
+  # and the live map -> odom -> base_link TF chain remain blocking checks.
+  AMCL_FRESH: WARN
   AMCL_COVARIANCE: BLOCK
   MOVE_BASE_AVAILABLE: BLOCK
   MAP_METADATA_VALID: BLOCK

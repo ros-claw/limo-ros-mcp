@@ -148,6 +148,21 @@ def _wait_for_stopped_odometry(rospy, odometry_type, timeout_sec):
     raise RequestError("base did not report a stopped odometry state")
 
 
+def _wait_for_post_dispatch_amcl(rospy, state, dispatched_wall_time, timeout_sec):
+    deadline = time.time() + timeout_sec
+    while not rospy.is_shutdown() and time.time() < deadline:
+        message = state.get("message")
+        received_wall_time = state.get("received_wall_time")
+        if (
+            message is not None
+            and received_wall_time is not None
+            and received_wall_time >= dispatched_wall_time
+        ):
+            return message
+        rospy.sleep(0.02)
+    raise RequestError("no post-dispatch AMCL pose was observed")
+
+
 def _run_ros(request):
     import actionlib
     import rospy
@@ -163,8 +178,16 @@ def _run_ros(request):
     if not server.wait_for_server(rospy.Duration(request["server_timeout_sec"])):
         raise RequestError("/move_base action server unavailable")
 
+    amcl_state = {"message": None, "received_wall_time": None}
+
+    def capture_amcl(message):
+        amcl_state["message"] = message
+        amcl_state["received_wall_time"] = time.time()
+
+    amcl_subscriber = rospy.Subscriber(
+        "/amcl_pose", PoseWithCovarianceStamped, capture_amcl, queue_size=1
+    )
     preflight_started = time.time()
-    amcl_before = rospy.wait_for_message("/amcl_pose", PoseWithCovarianceStamped, timeout=2.0)
     scan = rospy.wait_for_message("/scan", LaserScan, timeout=2.0)
     odom_before = rospy.wait_for_message("/odom", Odometry, timeout=2.0)
     status = rospy.wait_for_message("/limo_status", LimoStatus, timeout=2.0)
@@ -188,6 +211,7 @@ def _run_ros(request):
     goal.target_pose.pose.position.y = pose["y"]
     goal.target_pose.pose.orientation.z = math.sin(pose["yaw"] / 2.0)
     goal.target_pose.pose.orientation.w = math.cos(pose["yaw"] / 2.0)
+    amcl_observed_before_dispatch = amcl_state.get("message") is not None
     dispatched_wall = time.time()
     server.send_goal(goal)
     finished = server.wait_for_result(rospy.Duration(request["navigation_timeout_sec"]))
@@ -202,8 +226,11 @@ def _run_ros(request):
         _wait_for_stopped_odometry(rospy, Odometry, request["verification_timeout_sec"])
         raise RequestError("move_base finished without SUCCEEDED: %s" % terminal_text)
 
-    amcl_after = rospy.wait_for_message(
-        "/amcl_pose", PoseWithCovarianceStamped, timeout=request["verification_timeout_sec"]
+    amcl_after = _wait_for_post_dispatch_amcl(
+        rospy,
+        amcl_state,
+        dispatched_wall,
+        request["verification_timeout_sec"],
     )
     observed = _pose_from_amcl(amcl_after)
     position_error, yaw_error = _pose_error(observed, pose)
@@ -216,6 +243,7 @@ def _run_ros(request):
         rospy, Odometry, request["verification_timeout_sec"]
     )
     map_to_base_after = listener.lookupTransform("map", "base_link", rospy.Time(0))
+    amcl_subscriber.unregister()
     return {
         "protocol": PROTOCOL,
         "ok": True,
@@ -229,7 +257,7 @@ def _run_ros(request):
         "dispatched_wall_time": dispatched_wall,
         "completed_wall_time": time.time(),
         "preflight": {
-            "amcl_pose": _pose_from_amcl(amcl_before),
+            "amcl_pose_observed_before_dispatch": amcl_observed_before_dispatch,
             "odom_frame_id": odom_before.header.frame_id,
             "lidar_range_count": len(scan.ranges),
             "chassis_error_code": error_code,

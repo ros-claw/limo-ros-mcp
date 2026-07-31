@@ -1,5 +1,5 @@
 #!/usr/bin/env python2
-"""Bounded daemon-owned ALSA worker for one LIMO speaker tone.
+"""Bounded daemon-owned audio worker for one LIMO speaker tone.
 
 The worker accepts one exact JSON request on stdin and writes one JSON result
 on stdout.  It exposes no arbitrary audio file, mixer control, command, or
@@ -28,6 +28,10 @@ SAMPLE_RATE_HZ = 16000
 MAX_AMPLITUDE = 0.25
 ALLOWED_FREQUENCIES_HZ = (440, 660, 880)
 ALLOWED_USB_CARD_NAMES = ("USB PnP Audio Device", "USB PnP Sound Device")
+PULSE_SINK_PATTERN = re.compile(
+    r"^alsa_output\.usb-[A-Za-z0-9_.:-]*USB_PnP_(?:Audio|Sound)_Device"
+    r"[A-Za-z0-9_.:-]*\.analog-stereo$"
+)
 try:
     STRING_TYPES = (basestring,)  # type: ignore[name-defined]  # noqa: F821
 except NameError:
@@ -121,12 +125,13 @@ def _usb_audio_card():
     return matches[0]
 
 
-def _run(command, input_bytes=None):
+def _run(command, input_bytes=None, env=None):
     process = subprocess.Popen(
         command,
         stdin=subprocess.PIPE if input_bytes is not None else None,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
+        env=env,
     )
     stdout, stderr = process.communicate(input_bytes)
     return process.returncode, stdout, stderr
@@ -180,6 +185,61 @@ def _tone_wav(frequency_hz, duration_sec):
     return output.getvalue(), frame_count
 
 
+def _pulse_server():
+    runtime_dir = "/run/user/%d" % os.getuid()
+    socket_path = os.path.join(runtime_dir, "pulse", "native")
+    if os.path.exists(socket_path):
+        return "unix:%s" % socket_path
+    return None
+
+
+def _pulse_sink(server):
+    code, stdout, stderr = _run(["/usr/bin/pactl", "--server", server, "list", "short", "sinks"])
+    if code != 0:
+        raise RequestError("cannot list PulseAudio sinks: %s" % stderr.strip())
+    if not isinstance(stdout, str):
+        stdout = stdout.decode("utf-8", "replace")
+    matches = []
+    for line in stdout.splitlines():
+        fields = line.split()
+        if len(fields) >= 2 and PULSE_SINK_PATTERN.match(fields[1]):
+            matches.append(fields[1])
+    if len(matches) != 1:
+        raise RequestError("expected exactly one allowlisted USB PnP PulseAudio sink")
+    return matches[0]
+
+
+def _play_tone(card, wav_bytes):
+    server = _pulse_server()
+    if server is not None:
+        sink = _pulse_sink(server)
+        code, _stdout, stderr = _run(
+            [
+                "/usr/bin/paplay",
+                "--server",
+                server,
+                "--device",
+                sink,
+                "--client-name",
+                "rosclaw-limo-tone",
+                "--stream-name",
+                "bounded-tone",
+            ],
+            input_bytes=wav_bytes,
+        )
+        if code != 0:
+            raise RequestError("PulseAudio playback failed: %s" % stderr.strip())
+        return "pulseaudio", "pulse:%s" % sink
+    device = "plughw:%d,0" % card
+    code, _stdout, stderr = _run(
+        ["/usr/bin/aplay", "-q", "-D", device],
+        input_bytes=wav_bytes,
+    )
+    if code != 0:
+        raise RequestError("ALSA playback failed: %s" % stderr.strip())
+    return "alsa", device
+
+
 def _run_audio(request):
     card = _usb_audio_card()
     original_percent, original_unmuted = _speaker_state(card)
@@ -188,12 +248,7 @@ def _run_audio(request):
     restored = False
     try:
         _set_speaker_state(card, request["volume_percent"], True)
-        code, _stdout, stderr = _run(
-            ["/usr/bin/aplay", "-q", "-D", "plughw:%d,0" % card],
-            input_bytes=wav_bytes,
-        )
-        if code != 0:
-            raise RequestError("ALSA playback failed: %s" % stderr.strip())
+        playback_backend, device = _play_tone(card, wav_bytes)
     finally:
         _set_speaker_state(card, original_percent, original_unmuted)
         restored = True
@@ -203,7 +258,8 @@ def _run_audio(request):
         "accepted": True,
         "action_id": request["action_id"],
         "operation": request["operation"],
-        "device": "plughw:%d,0" % card,
+        "device": device,
+        "playback_backend": playback_backend,
         "alsa_card_index": card,
         "frequency_hz": request["frequency_hz"],
         "duration_sec": request["duration_sec"],
