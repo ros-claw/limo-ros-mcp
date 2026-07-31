@@ -7,6 +7,7 @@ import math
 from limo_ros_mcp.messages import (
     evaluate_patrol_readiness,
     summarize_binary_sensor,
+    summarize_camera_info,
     summarize_diagnostics,
     summarize_goal_status,
     summarize_laser_scan,
@@ -33,6 +34,30 @@ def test_binary_sensor_summary_decodes_roscli_noarr_lengths() -> None:
     assert summary["fields"] == []
     assert summary["data_length"] == 4_096_000
     assert summary["data_truncated"] is True
+
+
+def test_camera_info_summary_reports_calibration_shape() -> None:
+    summary = summarize_camera_info(
+        {
+            "header": {"frame_id": "camera_color_optical_frame"},
+            "height": 480,
+            "width": 640,
+            "distortion_model": "plumb_bob",
+            "D": [0.0] * 5,
+            "K": [0.0] * 9,
+            "R": [0.0] * 9,
+            "P": [0.0] * 12,
+            "binning_x": 0,
+            "binning_y": 0,
+            "roi": {"x_offset": 0, "y_offset": 0, "height": 0, "width": 0},
+        }
+    )
+
+    assert summary["width"] == 640
+    assert summary["height"] == 480
+    assert summary["distortion_coefficient_count"] == 5
+    assert summary["intrinsic_matrix_valid"] is True
+    assert summary["projection_matrix_valid"] is True
 
 
 def test_status_decodes_motion_mode_and_driver_error_bits() -> None:

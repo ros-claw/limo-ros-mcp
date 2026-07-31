@@ -1,14 +1,14 @@
 {
   "schema_version": "1.0",
   "name": "limo-ros-mcp",
-  "version": "0.6.5",
+  "version": "0.7.0",
   "robot": "AgileX LIMO",
   "transport": "stdio",
   "entrypoint": "limo-ros-mcp",
   "execution_boundary": "rosclawd",
   "direct_cmd_vel_exposed": false,
-  "mcp_tool_count": 22,
-  "observation_count": 23,
+  "mcp_tool_count": 29,
+  "observation_count": 27,
   "source_repositories": [
     "https://github.com/agilexrobotics/limo_ros",
     "https://github.com/agilexrobotics/limo-doc"

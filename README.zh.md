@@ -1,13 +1,17 @@
 # limo-ros-mcp
 
-AgileX LIMO ROS 1 的独立巡检 MCP 服务。它把 `limo_ros` 的底盘、激光、定位、导航、地图、诊断、TF 和 RGB-D 接口转换成 22 个 Codex 可调用工具，并把会改变机器人状态的请求交给 ROSClaw 守护进程。
+AgileX LIMO ROS 1 的独立巡检 MCP 服务。它把 `limo_ros` 的底盘、激光、定位、导航、地图、诊断、TF、RGB-D、音频、显示和 Jetson 主机接口转换成 29 个 Codex 可调用工具，并把会改变机器人状态的请求交给 ROSClaw 守护进程。
 
 本次真机接口验证、动态状态和巡检前置问题记录在
 [`docs/ROS_INSPECTION_READINESS.md`](docs/ROS_INSPECTION_READINESS.md)。
+USB、音频、显示、触摸屏、相机健康与 Jetson 证据边界详见
+[`docs/PERIPHERAL_INSPECTION.md`](docs/PERIPHERAL_INSPECTION.md)。
 
 ## ROS 巡检接口
 
-- 23 个具名观测契约覆盖 LIMO 驱动、AMCL、move_base、地图/costmap、诊断、TF、日志和文档中的 RGB-D 数据流。
+- 27 个具名 ROS 观测契约覆盖 LIMO 驱动、AMCL、move_base、地图/costmap、诊断、TF、日志，以及 Dabai 彩色、深度、红外、点云和标定流。
+- 只读外设工具会将手册中的外设与 USB、ALSA、framebuffer、触摸屏、温度、内存和磁盘真机证据交叉核验。
+- `limo_measure_microphone` 只在内存中采集 1–3 秒，返回 RMS/峰值后立即丢弃样本，不保存或返回音频内容。
 - `limo_observe` 默认返回紧凑摘要；消息级调试时可显式设置 `include_raw=true`。
 - `limo_sample_topic` 可采样 1-10 条消息，返回摘要和估算频率。
 - 图像、点云、路径、激光数组和占用栅格默认只返回适合模型处理的统计量。
@@ -27,6 +31,7 @@ AgileX LIMO ROS 1 的独立巡检 MCP 服务。它把 `limo_ros` 的底盘、激
 | 契约与 ROS graph | `limo_get_contract`、`limo_list_observations`、`limo_probe_ros`、`limo_get_topic_info` |
 | 消息检查 | `limo_observe`、`limo_sample_topic` |
 | 巡检快照 | `limo_get_base_state`、`limo_get_laser_summary`、`limo_get_localization_state`、`limo_get_navigation_state`、`limo_get_map_summary`、`limo_get_diagnostics`、`limo_get_transform_state`、`limo_get_patrol_readiness` |
+| 相机与外设 | `limo_get_camera_state`、`limo_get_dabai_device_state`、`limo_list_peripherals`、`limo_get_audio_state`、`limo_measure_microphone`、`limo_get_display_state`、`limo_get_platform_health` |
 | 参数验证 | `limo_validate_navigation_goal`、`limo_validate_velocity_command` |
 | ROSClaw 控制面 | `limo_get_runtime_status`、`limo_request_navigation`、`limo_request_initial_pose`、`limo_get_action_status`、`limo_get_execution_receipt`、`limo_emergency_stop` |
 
@@ -84,6 +89,10 @@ roslaunch rosbridge_server rosbridge_websocket.launch port:=9090
 8. 必须用动作状态和执行回执判断结果，不能根据文字输出或 topic 变化猜测成功。
 
 准备度证据、导航契约与 fail-closed 语义详见 [`docs/READINESS_EVIDENCE_V1.md`](docs/READINESS_EVIDENCE_V1.md) 和 [`docs/NAVIGATION_CONTRACT_V2.md`](docs/NAVIGATION_CONTRACT_V2.md)。Readiness snapshot 只是关联证据，不能替代 daemon 在 dispatch 前重新执行的可信 preflight。
+
+本版本可以观测扬声器增益，但不能直接修改。上游驱动没有提供前置 OLED 或车身 RGB
+灯接口，真机也没有枚举出独立功放的电源、温度或故障接口，因此这些外设会明确返回
+`declared_unbound`，不会用猜测出来的命令冒充支持。
 
 ## 上游来源
 

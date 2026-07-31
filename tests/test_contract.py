@@ -13,7 +13,10 @@ from limo_ros_mcp.contract import (
 
 def test_contract_exposes_only_source_backed_interfaces() -> None:
     contract = get_limo_contract()
-    interfaces = {item["ros_name"]: item for item in contract["interfaces"]}
+    interfaces = {item["ros_name"]: item for item in contract["interfaces"] if "ros_name" in item}
+    host_interfaces = {
+        item["capability_id"]: item for item in contract["interfaces"] if "host_kind" in item
+    }
 
     assert {
         "/limo_status",
@@ -30,6 +33,11 @@ def test_contract_exposes_only_source_backed_interfaces() -> None:
     )
     assert interfaces["/limo_status"]["ros_type"] == "limo_base/LimoStatus"
     assert interfaces["/cmd_vel"]["enabled"] is False
+    assert host_interfaces["limo.observe.microphone_level"]["read_only"] is True
+    assert (
+        host_interfaces["limo.observe.microphone_level"]["host_kind"]
+        == "alsa_pcm_bounded_no_retention"
+    )
     assert contract["safety"]["readiness_evidence_schema"] == "limo.readiness.v1"
     assert contract["safety"]["legacy_booleans_usable_for_real"] is False
     assert contract["safety"]["real_navigation_enabled"] is False

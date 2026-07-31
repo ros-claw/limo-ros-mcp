@@ -458,6 +458,28 @@ def summarize_binary_sensor(message: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def summarize_camera_info(message: dict[str, Any]) -> dict[str, Any]:
+    """Summarize intrinsic calibration without returning large matrices verbatim."""
+
+    distortion = _list(message.get("D"))
+    intrinsic = _list(message.get("K"))
+    rectification = _list(message.get("R"))
+    projection = _list(message.get("P"))
+    return {
+        "header": _header_summary(message),
+        "height": message.get("height"),
+        "width": message.get("width"),
+        "distortion_model": str(message.get("distortion_model", "")),
+        "distortion_coefficient_count": len(distortion),
+        "intrinsic_matrix_valid": len(intrinsic) == 9,
+        "rectification_matrix_valid": len(rectification) == 9,
+        "projection_matrix_valid": len(projection) == 12,
+        "binning_x": message.get("binning_x"),
+        "binning_y": message.get("binning_y"),
+        "roi": _mapping(message.get("roi")),
+    }
+
+
 def summarize_ros_log(message: dict[str, Any]) -> dict[str, Any]:
     return {
         "header": _header_summary(message),
@@ -493,8 +515,10 @@ def summarize_observation(observation: str, message: dict[str, Any]) -> dict[str
         return summarize_diagnostics(message)
     if observation in {"tf", "tf_static"}:
         return summarize_tf(message)
-    if observation in {"color_image", "depth_image", "depth_points"}:
+    if observation in {"color_image", "depth_image", "depth_points", "infrared_image"}:
         return summarize_binary_sensor(message)
+    if observation in {"color_camera_info", "depth_camera_info", "infrared_camera_info"}:
+        return summarize_camera_info(message)
     if observation == "ros_logs":
         return summarize_ros_log(message)
     if observation == "current_goal":

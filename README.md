@@ -1,17 +1,21 @@
 # limo-ros-mcp
 
-Inspection-focused MCP server for the AgileX LIMO ROS 1 platform. It converts the documented `limo_ros` base, lidar, localization, navigation, mapping, diagnostics, TF, and RGB-D interfaces into 22 MCP tools for Codex. State-changing requests remain delegated to the ROSClaw daemon.
+Inspection-focused MCP server for the AgileX LIMO ROS 1 platform. It converts the documented `limo_ros` base, lidar, localization, navigation, mapping, diagnostics, TF, RGB-D, audio, display, and Jetson host interfaces into 29 MCP tools for Codex. State-changing requests remain delegated to the ROSClaw daemon.
 
 The ROSClaw embodiment assets live in `e-urdf-zoo/limo`, with the project template and ROS embodiment card under `configs/`.
 
 The current real-robot interface verification and patrol preflight findings are recorded in
 [`docs/ROS_INSPECTION_READINESS.md`](docs/ROS_INSPECTION_READINESS.md).
+The USB, audio, display, touchscreen, camera-health, and Jetson evidence contract is documented in
+[`docs/PERIPHERAL_INSPECTION.md`](docs/PERIPHERAL_INSPECTION.md).
 
 [中文说明](README.zh.md)
 
 ## ROS inspection surface
 
-- Twenty-three named observation contracts cover the LIMO driver, AMCL, move_base, maps/costmaps, diagnostics, TF, logs, and documented RGB-D streams.
+- Twenty-seven named ROS observation contracts cover the LIMO driver, AMCL, move_base, maps/costmaps, diagnostics, TF, logs, and Dabai color, depth, IR, point-cloud, and calibration streams.
+- Read-only host tools correlate documented peripherals with live USB, ALSA, framebuffer, touchscreen, thermal, memory, and disk evidence.
+- `limo_measure_microphone` records one to three seconds into memory only, returns RMS/peak statistics, and discards every sample without returning audio content.
 - `limo_observe` returns a compact message summary by default; `include_raw=true` is available for bounded message-level debugging.
 - `limo_sample_topic` collects 1-10 messages and reports compact summaries plus an estimated message rate.
 - Images, point clouds, paths, laser arrays, and occupancy grids are reduced to useful metadata and statistics by default.
@@ -30,6 +34,7 @@ The current real-robot interface verification and patrol preflight findings are 
 | Contract and ROS graph | `limo_get_contract`, `limo_list_observations`, `limo_probe_ros`, `limo_get_topic_info` |
 | Message inspection | `limo_observe`, `limo_sample_topic` |
 | Inspection snapshots | `limo_get_base_state`, `limo_get_laser_summary`, `limo_get_localization_state`, `limo_get_navigation_state`, `limo_get_map_summary`, `limo_get_diagnostics`, `limo_get_transform_state`, `limo_get_patrol_readiness` |
+| Camera and peripherals | `limo_get_camera_state`, `limo_get_dabai_device_state`, `limo_list_peripherals`, `limo_get_audio_state`, `limo_measure_microphone`, `limo_get_display_state`, `limo_get_platform_health` |
 | Validation | `limo_validate_navigation_goal`, `limo_validate_velocity_command` |
 | ROSClaw control plane | `limo_get_runtime_status`, `limo_request_navigation`, `limo_request_initial_pose`, `limo_get_action_status`, `limo_get_execution_receipt`, `limo_emergency_stop` |
 
@@ -92,6 +97,11 @@ Then call `limo_probe_ros`, inspect important endpoints with `limo_get_topic_inf
 See [`docs/READINESS_EVIDENCE_V1.md`](docs/READINESS_EVIDENCE_V1.md) and [`docs/NAVIGATION_CONTRACT_V2.md`](docs/NAVIGATION_CONTRACT_V2.md) for the evidence, static map, and fail-closed contracts.
 
 Use SHADOW before considering REAL. Do not submit REAL unless `limo_get_runtime_status` proves the daemon boundary is ready and an operator has authorized the exact action. Verify the outcome through `limo_get_action_status` and `limo_get_execution_receipt`.
+
+Speaker gain is observable but not mutable through this release. The upstream driver exposes no
+front-OLED or chassis-RGB-light API, and no independent amplifier power, temperature, or fault
+interface was detected. Those documented devices are returned as `declared_unbound` instead of
+being represented by guessed commands.
 
 ## Provenance
 

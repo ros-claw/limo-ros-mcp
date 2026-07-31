@@ -5,11 +5,13 @@ are a point-in-time observation, not a permanent robot claim or proof of motion.
 
 ## Implemented interface
 
-- 22 MCP tools and 23 named ROS observation contracts.
+- 29 MCP tools and 27 named ROS observation contracts.
 - ROS graph discovery and per-topic type/publisher/subscriber inspection.
 - Bounded 1-10 message sampling with ROS-header rate estimation.
 - Compact parsers for LIMO status, odometry, IMU, LaserScan, AMCL pose, move_base status,
-  paths, maps/costmaps, diagnostics, TF, logs, images, and point clouds.
+  paths, maps/costmaps, diagnostics, TF, logs, images, camera calibration, and point clouds.
+- Live host-peripheral correlation for USB devices, ALSA playback/capture, microphone level,
+  framebuffer, touchscreen, thermal zones, memory, swap, disk, and uptime.
 - Concurrent patrol preflight across status, odometry, IMU, lidar, localization, navigation,
   map metadata, and diagnostics.
 - High-level navigation remains connected to the ROSClaw daemon path; no Agent-side ROS
@@ -41,6 +43,10 @@ The live suite verifies:
 3. Two `/move_base/status` messages can be sampled and their rate derived from ROS stamps.
 4. `/scan` has the expected message type and live graph endpoints.
 5. A real MCP stdio client can call `limo_get_patrol_readiness` and receive structured evidence.
+6. The Dabai color/depth core streams, optional IR endpoints, and getter-only identity/health
+   services report their real active or inactive state.
+7. A real MCP stdio client can call every host-peripheral tool, including a one-second
+   no-retention microphone-level sample.
 
 ## 2026-07-27 live snapshot
 
@@ -82,6 +88,32 @@ A SHADOW `limo.set_initial_pose` request for `(0.75, -1.25, 0.35 rad)` completed
 `TASK_VERIFIED` receipt and `hardware_dispatched=false`. An MCP protocol test also rendered the
 new REAL confirmation form, declined it, and verified that no daemon Session, Permit, or Action
 was created.
+
+### Peripheral expansion
+
+The expanded opt-in suite completed with 19/19 live tests passing. This includes a real stdio MCP
+client invoking every new host-peripheral tool, not only direct Python service calls.
+
+The live host additionally confirmed the following patrol-relevant devices and interfaces:
+
+| Peripheral | Live evidence | MCP result |
+| --- | --- | --- |
+| Dabai RGB/IR camera | USB `2bc5:0557`; color stream active | Color image and CameraInfo bound |
+| Dabai depth sensor | USB `2bc5:0657`; depth and point cloud active | Depth, CameraInfo, and PointCloud2 bound |
+| Dabai IR hardware | Getter services report device health and IR temperature | Endpoints bound; image stream truthfully reported inactive |
+| Lidar | CP210x USB-UART plus `/scan` | Existing lidar summary remains active |
+| Voice module | USB `0c76:161f`, ALSA playback and capture | Audio state and no-retention microphone level bound |
+| Rear display | Active 1024x600 framebuffer | Display state bound |
+| Rear touch panel | USB `1a86:e5e3` input device | Touchscreen presence bound |
+| Jetson platform | Thermal, memory, swap, disk, load, uptime | Platform-health tool bound |
+| Front OLED | Documented 128x64 device, no stable host/ROS interface found | `declared_unbound` |
+| Chassis RGB lights | Firmware-owned, no upstream ROS API found | `declared_unbound` |
+
+The USB sound card exposes Speaker gain/mute and microphone capture gain. No independent physical
+amplifier power, temperature, or fault interface was enumerated. The MCP therefore observes these
+controls but does not invent an amplifier-control contract. The one-second live microphone test
+analyzed PCM samples in memory and returned only level statistics; no recording was retained or
+returned.
 
 ## Next patrol experiment sequence
 
