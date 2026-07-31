@@ -192,6 +192,33 @@ def test_navigation_worker_rejects_non_map_and_unbounded_timeout() -> None:
         NAVIGATION.validate_request(long_timeout)
 
 
+def test_navigation_worker_waits_for_post_dispatch_amcl(monkeypatch) -> None:
+    before = object()
+    after = object()
+    state = {"message": before, "received_wall_time": 9.0}
+
+    class FakeRospy:
+        sleeps = 0
+
+        @staticmethod
+        def is_shutdown() -> bool:
+            return False
+
+        def sleep(self, _duration: float) -> None:
+            self.sleeps += 1
+            state["message"] = after
+            state["received_wall_time"] = 10.1
+
+    clock = iter([10.0, 10.0, 10.2])
+    monkeypatch.setattr(NAVIGATION.time, "time", lambda: next(clock))
+    rospy = FakeRospy()
+
+    observed = NAVIGATION._wait_for_post_dispatch_amcl(rospy, state, 10.0, 1.0)
+
+    assert observed is after
+    assert rospy.sleeps == 1
+
+
 @pytest.mark.parametrize(
     ("worker", "payload"),
     [

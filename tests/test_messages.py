@@ -204,7 +204,7 @@ def test_patrol_readiness_reports_ready_and_obstacle_blocked_states() -> None:
     assert "LIMO_FRONT_CLEARANCE_LOW" in blocked["blockers"]
 
 
-def test_patrol_readiness_blocks_stale_localization_and_degrades_on_diagnostics() -> None:
+def test_patrol_readiness_warns_on_stale_localization_and_diagnostics() -> None:
     summaries = {
         "status": {"error_code": 0, "motion_mode": 0, "header": {"age_sec": 0.1}},
         "odometry": {"header": {"age_sec": 0.1}},
@@ -228,4 +228,5 @@ def test_patrol_readiness_blocks_stale_localization_and_degrades_on_diagnostics(
     result = evaluate_patrol_readiness(summaries)
 
     assert result["state"] == "BLOCKED"
-    assert "LIMO_AMCL_STALE" in result["blockers"]
+    assert "LIMO_AMCL_STALE" in result["warnings"]
+    assert "LIMO_AMCL_STALE" not in result["blockers"]

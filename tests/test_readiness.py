@@ -77,7 +77,7 @@ def test_untagged_rosclaw_body_digest_is_treated_as_bound() -> None:
     assert evidence["body_snapshot_hash"] == body_hash
 
 
-def test_stale_amcl_and_missing_receive_time_fail_closed() -> None:
+def test_stale_amcl_warns_but_missing_receive_time_fails_closed() -> None:
     records = _records()
     records["localized_pose"]["summary"]["header"] = {"age_sec": 30.0}
     records["laser_scan"].pop("received_monotonic")
@@ -90,7 +90,8 @@ def test_stale_amcl_and_missing_receive_time_fail_closed() -> None:
     )
 
     assert evidence["state"] == "BLOCKED"
-    assert "LIMO_AMCL_STALE" in evidence["blockers"]
+    assert "LIMO_AMCL_STALE" in evidence["warnings"]
+    assert "LIMO_AMCL_STALE" not in evidence["blockers"]
     assert "LIMO_CLOCK_UNVERIFIED" in evidence["blockers"]
 
 
