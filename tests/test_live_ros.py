@@ -79,6 +79,25 @@ def test_live_laser_topic_has_expected_graph_endpoints() -> None:
     assert result["command_dispatched"] is False
 
 
+@pytest.mark.parametrize("observation", ["color_image", "depth_image", "depth_points"])
+def test_live_dabai_camera_streams_are_observable(observation: str) -> None:
+    service = LimoMCPService(gateway=object())
+    info = service.topic_info(observation, timeout_sec=10.0, transport="roscli")
+    sample = service.observe(
+        observation,
+        timeout_sec=10.0,
+        transport="roscli",
+        include_raw=False,
+    )
+
+    assert info["ok"] is True
+    assert info["publishers"]
+    assert sample["ok"] is True
+    assert sample["summary"]["height"] > 0
+    assert sample["summary"]["width"] > 0
+    assert sample["command_dispatched"] is False
+
+
 @pytest.mark.asyncio
 async def test_live_mcp_patrol_readiness_protocol() -> None:
     params = StdioServerParameters(

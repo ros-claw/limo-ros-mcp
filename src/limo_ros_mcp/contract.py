@@ -132,19 +132,19 @@ LIMO_OBSERVATION_SPECS: dict[str, dict[str, Any]] = {
         "required": False,
     },
     "color_image": {
-        "topic": "/limo/color/image_raw",
+        "topic": "/camera/color/image_raw",
         "message_type": "sensor_msgs/Image",
         "category": "camera",
         "required": False,
     },
     "depth_image": {
-        "topic": "/limo/depth/image_raw",
+        "topic": "/camera/depth/image_raw",
         "message_type": "sensor_msgs/Image",
         "category": "camera",
         "required": False,
     },
     "depth_points": {
-        "topic": "/limo/depth/points",
+        "topic": "/camera/depth/points",
         "message_type": "sensor_msgs/PointCloud2",
         "category": "camera",
         "required": False,

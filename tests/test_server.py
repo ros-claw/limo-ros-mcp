@@ -8,12 +8,28 @@ from typing import Any
 
 import pytest
 
+from limo_ros_mcp.contract import LIMO_OBSERVATION_TOPICS
 from limo_ros_mcp.evidence import seal_snapshot
 from limo_ros_mcp.rosbridge import validate_rosbridge_endpoint
 from limo_ros_mcp.server import (
     LimoMCPService,
     build_mcp_server,
 )
+
+
+def test_dabai_camera_contract_uses_live_astra_topics() -> None:
+    assert LIMO_OBSERVATION_TOPICS["color_image"] == (
+        "/camera/color/image_raw",
+        "sensor_msgs/Image",
+    )
+    assert LIMO_OBSERVATION_TOPICS["depth_image"] == (
+        "/camera/depth/image_raw",
+        "sensor_msgs/Image",
+    )
+    assert LIMO_OBSERVATION_TOPICS["depth_points"] == (
+        "/camera/depth/points",
+        "sensor_msgs/PointCloud2",
+    )
 
 
 @pytest.mark.asyncio

@@ -90,9 +90,9 @@ preferred_interfaces:
 
   - capability_id: limo.observe.camera
     ros_kind: topic_group
-    ros_names: [/limo/color/image_raw, /limo/depth/image_raw, /limo/depth/points]
+    ros_names: [/camera/color/image_raw, /camera/depth/image_raw, /camera/depth/points]
     ros_types: [sensor_msgs/Image, sensor_msgs/Image, sensor_msgs/PointCloud2]
-    reason: "Documented LIMO RGB-D inspection streams; payloads are summarized by default."
+    reason: "Dabai U3 RGB-D inspection streams from astra_camera/dabai_u3.launch; payloads are summarized by default."
 
 discouraged_interfaces:
   - ros_kind: topic
