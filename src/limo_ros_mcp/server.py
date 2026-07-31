@@ -15,7 +15,6 @@ from threading import Lock
 from typing import Any
 
 from mcp.server.fastmcp import Context, FastMCP
-from pydantic import BaseModel, Field
 
 from limo_ros_mcp.clocks import ClockJumpTracker
 from limo_ros_mcp.contract import (
@@ -33,11 +32,10 @@ from limo_ros_mcp.rosbridge import RosbridgeReadOnlyClient, validate_rosbridge_e
 from limo_ros_mcp.rosclaw_gateway import RosclawGateway
 from limo_ros_mcp.roscli import RosCliReadOnlyClient
 
-
-class LimoOperatorConfirmation(BaseModel):
-    """Minimal form rendered by MCP hosts for one exact REAL action."""
-
-    confirm: bool = Field(description="Confirm this exact one-shot REAL action on the LIMO robot.")
+LIMO_OPERATOR_CONFIRMATION_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {},
+}
 
 
 def _control_error(operation: str, exc: Exception) -> dict[str, Any]:
@@ -63,6 +61,17 @@ def _client_supports_form_elicitation(ctx: Any) -> bool:
     capabilities = getattr(client_params, "capabilities", None)
     elicitation = getattr(capabilities, "elicitation", None)
     return getattr(elicitation, "form", None) is not None
+
+
+async def _elicit_operator_confirmation(ctx: Any, *, message: str) -> Any:
+    """Request one native Allow/Cancel decision without a redundant form field."""
+
+    session = ctx.request_context.session
+    return await session.elicit_form(
+        message=message,
+        requestedSchema=LIMO_OPERATOR_CONFIRMATION_SCHEMA,
+        related_request_id=ctx.request_id,
+    )
 
 
 class LimoMCPService:
@@ -1436,7 +1445,7 @@ def build_mcp_server(service: LimoMCPService | None = None) -> FastMCP:
                 ),
             }
         try:
-            elicited = await ctx.elicit(message=message, schema=LimoOperatorConfirmation)
+            elicited = await _elicit_operator_confirmation(ctx, message=message)
         except Exception as exc:  # noqa: BLE001 - unsupported clients fail closed
             return {
                 **_control_error("operator_confirmation", exc),
@@ -1447,10 +1456,7 @@ def build_mcp_server(service: LimoMCPService | None = None) -> FastMCP:
                     "Enable MCP elicitations and retry the same tool call."
                 ),
             }
-        confirmation_data = getattr(elicited, "data", None)
-        accepted = str(elicited.action) == "accept" and bool(
-            getattr(confirmation_data, "confirm", False)
-        )
+        accepted = str(elicited.action) == "accept"
         if not accepted:
             return {
                 "ok": False,
@@ -1974,7 +1980,7 @@ def build_mcp_server(service: LimoMCPService | None = None) -> FastMCP:
                 "Effect: localization changes; no drive command is requested."
             )
             try:
-                elicited = await ctx.elicit(message=message, schema=LimoOperatorConfirmation)
+                elicited = await _elicit_operator_confirmation(ctx, message=message)
             except Exception as exc:  # noqa: BLE001 - unsupported clients fail closed
                 return {
                     **_control_error("operator_confirmation", exc),
@@ -1985,10 +1991,7 @@ def build_mcp_server(service: LimoMCPService | None = None) -> FastMCP:
                         "Enable MCP elicitations and retry the same tool call."
                     ),
                 }
-            confirmation_data = getattr(elicited, "data", None)
-            accepted = str(elicited.action) == "accept" and bool(
-                getattr(confirmation_data, "confirm", False)
-            )
+            accepted = str(elicited.action) == "accept"
             if not accepted:
                 return {
                     "ok": False,
