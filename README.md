@@ -70,10 +70,16 @@ Register the stdio server with absolute paths:
 ```bash
 codex mcp add rosclaw-limo \
   --env ROSCLAW_PROJECT_ROOT=/absolute/path/to/rosclaw \
+  --env ROS_PACKAGE_PATH=/absolute/path/to/catkin_ws/src:/opt/ros/melodic/share \
   -- /absolute/path/to/limo-ros-mcp/.venv/bin/python -m limo_ros_mcp.server
 ```
 
-`codex mcp list` confirms the configuration. After initially adding the server or changing its tool schema, let Codex rediscover the tools. REAL initial-pose execution uses MCP elicitation in the same tool call; the permit is injected internally and never appears as a tool input or result. Configure Codex to surface those prompts to the user:
+`ROS_PACKAGE_PATH` is required when the approved patrol policy uses `package://` map
+artifacts; without it, navigation validation fails closed before dispatch. `codex mcp list`
+confirms the configuration. After initially adding the server or changing its tool schema,
+let Codex rediscover the tools. REAL initial-pose execution uses MCP elicitation in the same
+tool call; the permit is injected internally and never appears as a tool input or result.
+Configure Codex to surface those prompts to the user:
 
 ```toml
 approval_policy = { granular = { mcp_elicitations = true } }
