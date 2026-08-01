@@ -6,6 +6,7 @@ import json
 import time
 import tomllib
 from pathlib import Path
+from threading import Lock
 from types import SimpleNamespace
 from typing import Any
 
@@ -300,6 +301,77 @@ def test_readiness_collection_reuses_preflighted_transport_and_aggregates_tf(
     assert result["transport_generation"] == "roscli-shared"
     assert client.probe_count == 1
     assert result["summaries"]["tf"]["transform_count"] == 2
+
+
+def test_roscli_readiness_collection_limits_process_fanout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class CountingClient:
+        transport_generation = "roscli-bounded"
+
+        def __init__(self) -> None:
+            self.active = 0
+            self.peak = 0
+            self.lock = Lock()
+
+        def probe(self) -> dict[str, Any]:
+            observations = [
+                "status",
+                "odometry",
+                "imu",
+                "laser_scan",
+                "localized_pose",
+                "navigation_status",
+                "map_metadata",
+                "global_costmap",
+                "local_costmap",
+                "diagnostics",
+            ]
+            topics = [LIMO_OBSERVATION_TOPICS[name][0] for name in observations]
+            types = [LIMO_OBSERVATION_TOPICS[name][1] for name in observations]
+            return {"topics": topics, "types": types, "nodes": []}
+
+        def subscribe_many(
+            self, topic: str, _message_type: str, *, count: int
+        ) -> list[dict[str, Any]]:
+            del topic, count
+            with self.lock:
+                self.active += 1
+                self.peak = max(self.peak, self.active)
+            try:
+                time.sleep(0.02)
+                return [{}]
+            finally:
+                with self.lock:
+                    self.active -= 1
+
+    client = CountingClient()
+    monkeypatch.setattr(
+        LimoMCPService,
+        "_client",
+        staticmethod(lambda *_args, **_kwargs: client),
+    )
+
+    result = LimoMCPService(gateway=object())._collect_summaries(
+        [
+            "status",
+            "odometry",
+            "imu",
+            "laser_scan",
+            "localized_pose",
+            "navigation_status",
+            "map_metadata",
+            "global_costmap",
+            "local_costmap",
+            "diagnostics",
+        ],
+        endpoint="ws://127.0.0.1:9090",
+        timeout_sec=2.0,
+        transport="roscli",
+    )
+
+    assert result["available_count"] == 10
+    assert client.peak == 8
 
 
 class FakeGateway:
