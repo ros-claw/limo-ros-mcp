@@ -79,6 +79,7 @@ OBSERVATION_MAX_AGE_SEC = {
     "tf_static": 60.0,
 }
 
+
 def _control_error(operation: str, exc: Exception) -> dict[str, Any]:
     return {
         "ok": False,
@@ -89,6 +90,8 @@ def _control_error(operation: str, exc: Exception) -> dict[str, Any]:
         "command_dispatched": False,
         "usable_for_real_execution": False,
     }
+
+
 class LimoMCPService:
     """Implementation behind the LIMO MCP tools, injectable for tests."""
 
@@ -102,9 +105,7 @@ class LimoMCPService:
         try:
             from rosclaw.interaction import InteractionClient, InteractionCoordinator
 
-            self._interaction: Any | None = InteractionCoordinator(
-                InteractionClient(self._gateway)
-            )
+            self._interaction: Any | None = InteractionCoordinator(InteractionClient(self._gateway))
         except ImportError:
             self._interaction = None
         self._goal_validator = goal_validator or NavigationGoalValidator()
@@ -1458,9 +1459,7 @@ def build_mcp_server(
                 if isinstance(readiness, dict)
                 else None,
             },
-            "risk_blockers": readiness.get("blockers", [])
-            if isinstance(readiness, dict)
-            else [],
+            "risk_blockers": readiness.get("blockers", []) if isinstance(readiness, dict) else [],
             "recent_receipt_id": None,
             "command_dispatched": False,
             "usable_for_real_execution": False,

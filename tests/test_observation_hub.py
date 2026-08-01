@@ -117,15 +117,11 @@ def test_navigation_reference_rejects_reconnected_transport(monkeypatch: Any) ->
     )
     service._remember_readiness(readiness)
     assert (
-        service._validate_readiness_reference(
-            str(readiness["snapshot_hash"]), "sha256:body"
-        )["ok"]
+        service._validate_readiness_reference(str(readiness["snapshot_hash"]), "sha256:body")["ok"]
         is True
     )
 
     service._observation_hub.invalidate("roscli", endpoint)
     service._observation_hub.client("roscli", endpoint, 1.0)
-    blocked = service._validate_readiness_reference(
-        str(readiness["snapshot_hash"]), "sha256:body"
-    )
+    blocked = service._validate_readiness_reference(str(readiness["snapshot_hash"]), "sha256:body")
     assert blocked["error_code"] == "LIMO_TRANSPORT_GENERATION_CHANGED"

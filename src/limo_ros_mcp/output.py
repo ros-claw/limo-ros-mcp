@@ -21,8 +21,7 @@ def compact_readiness(result: dict[str, Any], *, detail: str = "summary") -> dic
         for name, value in observations.items():
             if isinstance(value, dict):
                 freshness[str(name)] = {
-                    key: value.get(key)
-                    for key in ("age_sec", "clock_verified", "summary_hash")
+                    key: value.get(key) for key in ("age_sec", "clock_verified", "summary_hash")
                 }
     compact = {
         key: readiness.get(key)
