@@ -124,6 +124,8 @@ def build_readiness_evidence(
     clock_jump_detected: bool = False,
     now_wall: float | None = None,
     now_monotonic: float | None = None,
+    transport_binding: Mapping[str, Any] | None = None,
+    observation_cutoff_monotonic: float | None = None,
 ) -> ReadinessEvidenceV1:
     """Build a hash-sealed ``ReadinessEvidenceV1`` from bounded observations."""
 
@@ -482,7 +484,9 @@ def build_readiness_evidence(
             "first_received_at": utc_iso(first_received) if first_received is not None else None,
             "last_received_at": utc_iso(last_received) if last_received is not None else None,
             "skew_ms": skew * 1000.0 if skew is not None else None,
+            "cutoff_monotonic": observation_cutoff_monotonic,
         },
+        "transport_binding": dict(transport_binding or {}),
         "observations": observations,
         "observation_failures": failure_names,
         "checks": checks,

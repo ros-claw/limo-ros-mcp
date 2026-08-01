@@ -217,7 +217,7 @@ async def test_live_mcp_patrol_readiness_protocol() -> None:
             async with ClientSession(read, write) as session:
                 await session.initialize()
                 called = await session.call_tool(
-                    "limo_get_patrol_readiness",
+                    "limo_get_readiness",
                     {"transport": "roscli", "timeout_sec": 10.0},
                 )
 
@@ -232,7 +232,7 @@ async def test_live_mcp_patrol_readiness_protocol() -> None:
 async def test_live_mcp_peripheral_protocol() -> None:
     params = StdioServerParameters(
         command=sys.executable,
-        args=["-m", "limo_ros_mcp.server"],
+        args=["-m", "limo_ros_mcp.server", "--profile", "full"],
         env=os.environ.copy(),
     )
 
@@ -242,7 +242,7 @@ async def test_live_mcp_peripheral_protocol() -> None:
                 await session.initialize()
                 listed = await session.list_tools()
                 names = {tool.name for tool in listed.tools}
-                assert len(names) == 30
+                assert len(names) == 32
                 calls = (
                     ("limo_list_peripherals", {}),
                     ("limo_get_audio_state", {}),

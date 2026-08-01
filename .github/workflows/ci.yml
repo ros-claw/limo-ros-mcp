@@ -13,11 +13,21 @@ jobs:
         python-version: ["3.11", "3.12"]
     steps:
       - uses: actions/checkout@v4
+      - name: Check out ROSClaw interaction SDK
+        uses: actions/checkout@v4
+        with:
+          repository: ros-claw/rosclaw
+          # Interaction SDK baseline merged by ros-claw/rosclaw#180.
+          ref: 16163d6acc5b1ee375201d595383c4ac6d85b900
+          path: .ci/rosclaw
+          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+      - name: Install ROSClaw interaction SDK
+        run: python -m pip install --no-deps -e .ci/rosclaw
       - run: python -m pip install -e '.[dev]'
-      - run: ruff check .
-      - run: ruff format --check .
+      - run: ruff check src tests worker
+      - run: ruff format --check src tests worker
       - run: mypy src
       - run: pytest -q

@@ -87,5 +87,6 @@ ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["src"]
 asyncio_mode = "auto"
 markers = ["live_ros: read-only tests against an operator-started LIMO ROS 1 graph"]
