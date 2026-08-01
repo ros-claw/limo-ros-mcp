@@ -189,7 +189,6 @@ def test_camera_state_keeps_inactive_ir_optional(monkeypatch: pytest.MonkeyPatch
             "color_camera_info",
             "depth_image",
             "depth_camera_info",
-            "depth_points",
         )
     }
     monkeypatch.setattr(
@@ -199,6 +198,7 @@ def test_camera_state_keeps_inactive_ir_optional(monkeypatch: pytest.MonkeyPatch
             "ok": False,
             "summaries": core,
             "failures": {
+                "depth_points": {"error_code": "LIMO_OBSERVATION_FAILED"},
                 "infrared_image": {"error_code": "LIMO_OBSERVATION_FAILED"},
                 "infrared_camera_info": {"error_code": "LIMO_OBSERVATION_FAILED"},
             },
@@ -210,7 +210,11 @@ def test_camera_state_keeps_inactive_ir_optional(monkeypatch: pytest.MonkeyPatch
     assert result["ok"] is True
     assert result["core_ready"] is True
     assert result["core_failures"] == {}
-    assert result["optional_inactive"] == ["infrared_image", "infrared_camera_info"]
+    assert result["optional_inactive"] == [
+        "depth_points",
+        "infrared_image",
+        "infrared_camera_info",
+    ]
 
 
 def test_message_sampling_uses_ros_header_rate(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -301,6 +305,115 @@ def test_readiness_collection_reuses_preflighted_transport_and_aggregates_tf(
     assert result["transport_generation"] == "roscli-shared"
     assert client.probe_count == 1
     assert result["summaries"]["tf"]["transform_count"] == 2
+
+
+def test_rosbridge_readiness_samples_tf_long_enough_for_multiple_publishers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeRosbridgeClient:
+        transport_generation = "rosbridge-shared"
+
+        def probe(self) -> dict[str, Any]:
+            return {
+                "topics": ["/tf"],
+                "types": ["tf2_msgs/TFMessage"],
+                "nodes": [],
+            }
+
+        def subscribe_many(
+            self, _topic: str, _message_type: str, *, count: int
+        ) -> list[dict[str, Any]]:
+            assert count == 100
+            return [
+                {
+                    "transforms": [
+                        {
+                            "header": {"frame_id": "map" if index == 0 else "odom"},
+                            "child_frame_id": "odom" if index == 0 else "base_link",
+                        }
+                    ]
+                }
+                for index in range(count)
+            ]
+
+    client = FakeRosbridgeClient()
+    monkeypatch.setattr(
+        LimoMCPService,
+        "_client",
+        staticmethod(lambda *_args, **_kwargs: client),
+    )
+
+    result = LimoMCPService(gateway=object())._collect_summaries(
+        ["tf"],
+        endpoint="ws://127.0.0.1:9090",
+        timeout_sec=2.0,
+        transport="rosbridge",
+    )
+
+    assert result["ok"] is True
+    assert result["summaries"]["tf"]["transform_count"] == 2
+
+
+def test_rosbridge_readiness_uses_noarr_cli_summary_for_global_costmap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeRosbridgeClient:
+        transport_generation = "rosbridge-primary"
+
+        def probe(self) -> dict[str, Any]:
+            return {
+                "topics": ["/move_base/global_costmap/costmap"],
+                "types": ["nav_msgs/OccupancyGrid"],
+                "nodes": [],
+            }
+
+    class FakeRoscliClient:
+        transport_generation = "roscli-summary"
+
+        def subscribe_many(
+            self, _topic: str, _message_type: str, *, count: int
+        ) -> list[dict[str, Any]]:
+            assert count == 1
+            return [
+                {
+                    "header": {"stamp": {"secs": 10, "nsecs": 0}, "frame_id": "map"},
+                    "info": {"resolution": 0.05, "width": 1984, "height": 1984},
+                    "data": "<array type: int8, length: 3936256>",
+                }
+            ]
+
+    rosbridge = FakeRosbridgeClient()
+    roscli = FakeRoscliClient()
+    monkeypatch.setattr(
+        LimoMCPService,
+        "_client",
+        staticmethod(
+            lambda candidate, *_args, **_kwargs: rosbridge if candidate == "rosbridge" else roscli
+        ),
+    )
+    monkeypatch.setattr(
+        "limo_ros_mcp.server.RosCliReadOnlyClient", lambda *_args, **_kwargs: roscli
+    )
+
+    result = LimoMCPService(gateway=object())._collect_summaries(
+        ["global_costmap"],
+        endpoint="ws://127.0.0.1:9090",
+        timeout_sec=5.0,
+        transport="rosbridge",
+    )
+
+    assert result["ok"] is True
+    assert result["observation_records"]["global_costmap"]["transport"] == (
+        "local_roscli_read_only"
+    )
+    assert result["transport_components"] == [
+        {"transport": "rosbridge", "generation": "rosbridge-primary"},
+        {
+            "transport": "local_roscli_read_only",
+            "generation": "roscli-summary",
+            "purpose": "global_costmap_metadata_noarr",
+        },
+    ]
 
 
 def test_roscli_readiness_collection_limits_process_fanout(

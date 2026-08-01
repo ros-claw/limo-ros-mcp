@@ -591,6 +591,12 @@ class LimoMCPService:
             failures: dict[str, dict[str, Any]] = {}
             available: list[str] = []
             cache_hits: list[str] = []
+            transport_components = [
+                {
+                    "transport": candidate,
+                    "generation": getattr(client, "transport_generation", None),
+                }
+            ]
             for observation in observations:
                 topic, expected_type = LIMO_OBSERVATION_TOPICS[observation]
                 observed_type = observed_types.get(topic)
@@ -623,6 +629,50 @@ class LimoMCPService:
                     else:
                         available.append(observation)
 
+            # A full 1984x1984 global costmap takes roughly 25 seconds to become
+            # JSON over rosbridge on the LIMO Jetson.  Read its header and metadata
+            # first through the existing fixed, --noarr ROS CLI allowlist, then
+            # collect high-rate observations through rosbridge so their evidence
+            # remains inside one coherent window.
+            if candidate == "rosbridge" and "global_costmap" in available:
+                supplemental = RosCliReadOnlyClient(
+                    dict(LIMO_OBSERVATION_TOPICS.values()),
+                    timeout_sec=timeout_sec,
+                )
+                transport_components.append(
+                    {
+                        "transport": "local_roscli_read_only",
+                        "generation": supplemental.transport_generation,
+                        "purpose": "global_costmap_metadata_noarr",
+                    }
+                )
+                available.remove("global_costmap")
+                try:
+                    result = self._observe_with_client(
+                        "global_costmap",
+                        client=supplemental,
+                        transport="local_roscli_read_only",
+                        include_raw=False,
+                    )
+                except Exception as exc:  # noqa: BLE001 - preserve partial evidence
+                    failures["global_costmap"] = {
+                        "ok": False,
+                        "observation": "global_costmap",
+                        "error_code": "LIMO_OBSERVATION_FAILED",
+                        "error": str(exc),
+                        "command_dispatched": False,
+                    }
+                else:
+                    if isinstance(result.get("summary"), dict):
+                        summaries["global_costmap"] = result["summary"]
+                        records["global_costmap"] = {
+                            "summary": result["summary"],
+                            "received_wall_time": result.get("received_wall_time"),
+                            "received_monotonic": result.get("received_monotonic"),
+                            "transport": result.get("transport"),
+                            "transport_generation": result.get("transport_generation"),
+                        }
+
             if available:
                 worker_limit = ROSCLI_MAX_CONCURRENT_OBSERVATIONS if candidate == "roscli" else 12
                 with ThreadPoolExecutor(max_workers=min(worker_limit, len(available))) as executor:
@@ -633,7 +683,13 @@ class LimoMCPService:
                             client=client,
                             transport=candidate,
                             include_raw=False,
-                            sample_count=5 if observation == "tf" else 1,
+                            sample_count=(
+                                100
+                                if observation == "tf" and candidate == "rosbridge"
+                                else 5
+                                if observation == "tf"
+                                else 1
+                            ),
                         ): observation
                         for observation in available
                     }
@@ -676,6 +732,7 @@ class LimoMCPService:
                 "missing_count": len(failures),
                 "transport": candidate,
                 "transport_generation": getattr(client, "transport_generation", None),
+                "transport_components": transport_components,
                 "endpoint": endpoint,
                 "snapshot_cutoff_monotonic": cutoff_monotonic,
                 "cache_hits": sorted(cache_hits),
@@ -802,9 +859,8 @@ class LimoMCPService:
             "color_camera_info",
             "depth_image",
             "depth_camera_info",
-            "depth_points",
         ]
-        optional = ["infrared_image", "infrared_camera_info"]
+        optional = ["depth_points", "infrared_image", "infrared_camera_info"]
         result = self._collect_summaries(
             [*core, *optional],
             endpoint=endpoint,
@@ -946,6 +1002,7 @@ class LimoMCPService:
                 "endpoint": snapshot.get("endpoint", endpoint),
                 "transport": snapshot.get("transport", transport),
                 "generation": snapshot.get("transport_generation"),
+                "components": snapshot.get("transport_components", []),
             },
             observation_cutoff_monotonic=snapshot.get("snapshot_cutoff_monotonic"),
         )

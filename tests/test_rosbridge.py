@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import base64
 import json
+import struct
+import zlib
 from typing import Any
 
 from limo_ros_mcp.rosbridge import RosbridgeReadOnlyClient
@@ -32,6 +35,29 @@ class FakeConnection:
 class FakeSocket:
     def close(self) -> None:
         return None
+
+
+def _png_chunk(chunk_type: bytes, data: bytes) -> bytes:
+    return (
+        struct.pack(">I", len(data))
+        + chunk_type
+        + data
+        + struct.pack(">I", zlib.crc32(chunk_type + data) & 0xFFFFFFFF)
+    )
+
+
+def _png_response(message: dict[str, Any]) -> dict[str, Any]:
+    payload = json.dumps(message, separators=(",", ":")).encode()
+    width = max(1, len(payload))
+    padded = payload + b"\n" * (width * 3 - len(payload))
+    scanline = b"\x00" + padded
+    png = (
+        b"\x89PNG\r\n\x1a\n"
+        + _png_chunk(b"IHDR", struct.pack(">IIBBBBB", width, 1, 8, 2, 0, 0, 0))
+        + _png_chunk(b"IDAT", zlib.compress(scanline))
+        + _png_chunk(b"IEND", b"")
+    )
+    return {"op": "png", "data": base64.b64encode(png).decode()}
 
 
 def test_call_service_has_no_publish_primitive(monkeypatch: Any) -> None:
@@ -100,6 +126,25 @@ def test_subscribe_many_collects_bounded_messages_then_unsubscribes(monkeypatch:
     )
 
     assert [message["header"]["seq"] for message in messages] == [1, 2]
+    assert [item["op"] for item in connection.sent] == ["subscribe", "unsubscribe"]
+
+
+def test_large_costmap_uses_png_compression_and_decodes_response(monkeypatch: Any) -> None:
+    published = {
+        "op": "publish",
+        "topic": "/move_base/global_costmap/costmap",
+        "msg": {"info": {"width": 1984, "height": 1984}, "data": [-1, 0, 100]},
+    }
+    connection = FakeConnection([_png_response(published)])
+    monkeypatch.setattr("websocket.create_connection", lambda *_args, **_kwargs: connection)
+    monkeypatch.setattr("socket.create_connection", lambda *_args, **_kwargs: FakeSocket())
+
+    result = RosbridgeReadOnlyClient("ws://127.0.0.1:9090").subscribe_once(
+        "/move_base/global_costmap/costmap", "nav_msgs/OccupancyGrid"
+    )
+
+    assert result["info"] == {"width": 1984, "height": 1984}
+    assert connection.sent[0]["compression"] == "png"
     assert [item["op"] for item in connection.sent] == ["subscribe", "unsubscribe"]
 
 

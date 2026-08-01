@@ -6,13 +6,115 @@ import json
 import os
 import socket
 import ssl
+import struct
 import time
 import uuid
+import zlib
+from base64 import b64decode
 from contextlib import closing
 from typing import Any
 from urllib.parse import urlparse
 
 import websocket
+
+_PNG_COMPRESSED_TOPICS = frozenset({"/map", "/move_base/global_costmap/costmap"})
+
+
+def _paeth_predictor(left: int, above: int, upper_left: int) -> int:
+    estimate = left + above - upper_left
+    left_distance = abs(estimate - left)
+    above_distance = abs(estimate - above)
+    upper_left_distance = abs(estimate - upper_left)
+    if left_distance <= above_distance and left_distance <= upper_left_distance:
+        return left
+    if above_distance <= upper_left_distance:
+        return above
+    return upper_left
+
+
+def _decode_rosbridge_png(data: str, *, max_decoded_bytes: int) -> dict[str, Any]:
+    """Decode rosbridge's RGB-PNG wrapped JSON with a bounded stdlib decoder."""
+
+    encoded = b64decode(data, validate=True)
+    if not encoded.startswith(b"\x89PNG\r\n\x1a\n"):
+        raise RuntimeError("rosbridge PNG response has an invalid signature")
+
+    offset = 8
+    width = height = bit_depth = color_type = interlace = None
+    compressed_parts: list[bytes] = []
+    while offset + 12 <= len(encoded):
+        length = struct.unpack(">I", encoded[offset : offset + 4])[0]
+        chunk_type = encoded[offset + 4 : offset + 8]
+        end = offset + 12 + length
+        if end > len(encoded):
+            raise RuntimeError("rosbridge PNG response is truncated")
+        chunk = encoded[offset + 8 : offset + 8 + length]
+        if chunk_type == b"IHDR":
+            width, height, bit_depth, color_type, _compression, _filter, interlace = struct.unpack(
+                ">IIBBBBB", chunk
+            )
+        elif chunk_type == b"IDAT":
+            compressed_parts.append(chunk)
+        elif chunk_type == b"IEND":
+            break
+        offset = end
+
+    if (
+        not isinstance(width, int)
+        or not isinstance(height, int)
+        or width <= 0
+        or height <= 0
+        or bit_depth != 8
+        or color_type != 2
+        or interlace != 0
+    ):
+        raise RuntimeError("rosbridge PNG response is not bounded 8-bit RGB data")
+    row_bytes = width * 3
+    expected_bytes = height * (row_bytes + 1)
+    pixel_bytes = height * row_bytes
+    if pixel_bytes > max_decoded_bytes:
+        raise RuntimeError("rosbridge decompressed message exceeds the configured size limit")
+
+    decompressor = zlib.decompressobj()
+    filtered = decompressor.decompress(b"".join(compressed_parts), expected_bytes + 1)
+    if len(filtered) != expected_bytes or not decompressor.eof:
+        raise RuntimeError("rosbridge PNG response has an invalid decompressed size")
+
+    decoded = bytearray()
+    previous = bytearray(row_bytes)
+    cursor = 0
+    for _row in range(height):
+        filter_type = filtered[cursor]
+        scanline = filtered[cursor + 1 : cursor + 1 + row_bytes]
+        cursor += row_bytes + 1
+        reconstructed = bytearray(row_bytes)
+        for index, value in enumerate(scanline):
+            left = reconstructed[index - 3] if index >= 3 else 0
+            above = previous[index]
+            upper_left = previous[index - 3] if index >= 3 else 0
+            if filter_type == 0:
+                predictor = 0
+            elif filter_type == 1:
+                predictor = left
+            elif filter_type == 2:
+                predictor = above
+            elif filter_type == 3:
+                predictor = (left + above) // 2
+            elif filter_type == 4:
+                predictor = _paeth_predictor(left, above, upper_left)
+            else:
+                raise RuntimeError("rosbridge PNG response uses an unsupported filter")
+            reconstructed[index] = (value + predictor) & 0xFF
+        decoded.extend(reconstructed)
+        previous = reconstructed
+
+    try:
+        message = json.loads(bytes(decoded).rstrip(b"\n").decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError("rosbridge PNG response does not contain valid JSON") from exc
+    if not isinstance(message, dict):
+        raise RuntimeError("rosbridge PNG response did not contain an object message")
+    return message
 
 
 def allowed_rosbridge_hosts() -> set[str]:
@@ -50,10 +152,12 @@ class RosbridgeReadOnlyClient:
         *,
         timeout_sec: float = 2.0,
         max_message_bytes: int = 2_000_000,
+        max_decompressed_message_bytes: int = 32_000_000,
     ) -> None:
         self.endpoint = validate_rosbridge_endpoint(endpoint)
         self.timeout_sec = float(timeout_sec)
         self.max_message_bytes = int(max_message_bytes)
+        self.max_decompressed_message_bytes = int(max_decompressed_message_bytes)
         self.transport_generation = f"rosbridge-{uuid.uuid4()}"
 
     def _connect(self) -> Any:
@@ -92,6 +196,11 @@ class RosbridgeReadOnlyClient:
             if len(raw.encode("utf-8")) > self.max_message_bytes:
                 raise RuntimeError("rosbridge message exceeds the configured size limit")
             message = json.loads(raw)
+            if isinstance(message, dict) and message.get("op") == "png":
+                message = _decode_rosbridge_png(
+                    str(message.get("data", "")),
+                    max_decoded_bytes=self.max_decompressed_message_bytes,
+                )
             if isinstance(message, dict) and predicate(message):
                 return message
 
@@ -163,6 +272,8 @@ class RosbridgeReadOnlyClient:
             "queue_length": 1,
             "throttle_rate": 0,
         }
+        if topic in _PNG_COMPRESSED_TOPICS:
+            subscribe["compression"] = "png"
         unsubscribe = {"op": "unsubscribe", "id": subscription_id, "topic": topic}
         messages: list[dict[str, Any]] = []
         with closing(self._connect()) as connection:
