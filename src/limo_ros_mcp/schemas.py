@@ -46,6 +46,7 @@ class ReadinessEvidenceV1(TypedDict):
     created_monotonic: float
     clock: dict[str, Any]
     observation_window: dict[str, Any]
+    transport_binding: dict[str, Any]
     observations: dict[str, ObservationEvidenceV1]
     observation_failures: list[str]
     checks: list[ReadinessCheckV1]

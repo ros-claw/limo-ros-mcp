@@ -1,6 +1,6 @@
 # limo-ros-mcp
 
-AgileX LIMO ROS 1 的独立巡检 MCP 服务。它把 `limo_ros` 的底盘、激光、定位、导航、地图、诊断、TF、RGB-D、音频、显示和 Jetson 主机接口转换成 30 个 Codex 可调用工具，并把会改变机器人状态的请求交给 ROSClaw 守护进程。
+AgileX LIMO ROS 1 的独立巡检 MCP 服务。默认 `core` profile 只暴露 10 个有界工具；`inspection` 和 `full` profile 提供完整的 ROS、RGB-D、音频、显示与 Jetson 接口。会改变机器人状态的请求仍全部交给 ROSClaw 守护进程。
 
 本次真机接口验证、动态状态和巡检前置问题记录在
 [`docs/ROS_INSPECTION_READINESS.md`](docs/ROS_INSPECTION_READINESS.md)。
@@ -21,10 +21,13 @@ USB、音频、显示、触摸屏、相机健康与 Jetson 证据边界详见
 - 目标校验覆盖运维侧 route policy、地图 YAML/PGM 哈希、map 坐标系、地图边界、地理围栏、禁行区、占用栅格、净空、航向和容差。
 - REAL 必须具备 daemon-owned 可信 preflight、守护进程签发的许可、已验证执行器以及最终执行回执。
 - `limo_request_initial_pose(execution_mode="REAL")` 会在同一次 MCP 调用里显示精确动作确认；接受后 permit 由 ROSClaw 内部注入，Agent 不再填写或看到 permit ID。
-- `limo_get_patrol_readiness` 返回带 SHA-256 封印的 `limo.readiness.v1`：默认 5 秒有效期，包含 policy hash、观测接收时间、稳定检查项、blocker 与 warning。
+- `limo_get_readiness` 默认返回紧凑的 SHA-256 封印 readiness 引用；旧名 `limo_get_patrol_readiness` 只在 `--compat-tools` 或 `--profile full` 下提供。
+- 有界 `ObservationHub` 会复用只读传输、缓存新鲜摘要、合并并发 readiness 请求，并在 transport generation 变化时使旧快照失效。
 - 调用者自报的 readiness 布尔值已经删除。REAL 导航会在守护进程内重新检查 AMCL、雷达、底盘状态、TF 和 move_base，并通过对话框确认精确目标。
 
 ## 工具
+
+默认 `core` 包含 `limo_get_context`、`limo_observe`、`limo_get_readiness`、导航验证、三个受控请求、动作状态、回执和急停。使用 `--profile inspection` 获取全部只读诊断，或用 `--profile full` 获取完整工具面。
 
 | 分组 | 工具 |
 | --- | --- |
@@ -49,7 +52,7 @@ codex mcp add rosclaw-limo \
   --env ROS_PACKAGE_PATH=/absolute/path/to/catkin_ws/src:/opt/ros/melodic/share \
   --env LD_LIBRARY_PATH=/absolute/path/to/catkin_ws/devel/lib:/opt/ros/melodic/lib \
   --env CMAKE_PREFIX_PATH=/absolute/path/to/catkin_ws/devel:/opt/ros/melodic \
-  -- /absolute/path/to/limo-ros-mcp/.venv/bin/python -m limo_ros_mcp.server
+  -- /absolute/path/to/limo-ros-mcp/.venv/bin/python -m limo_ros_mcp.server --profile core
 codex mcp list
 ```
 

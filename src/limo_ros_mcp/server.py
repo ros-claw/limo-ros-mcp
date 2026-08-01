@@ -9,13 +9,24 @@ import time
 import uuid
 from collections import OrderedDict
 from collections.abc import Mapping
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime, timedelta
 from threading import Lock
-from typing import Any
+from typing import Any, Literal, cast
 
 from mcp.server.fastmcp import Context, FastMCP
+from mcp.types import ToolAnnotations
 
+from limo_ros_mcp.action_specs import (
+    initial_pose_arguments,
+    initial_pose_display,
+    navigation_arguments,
+    navigation_display,
+    tone_arguments,
+    tone_display,
+    validate_tone,
+)
+from limo_ros_mcp.cache import ObservationHub
 from limo_ros_mcp.clocks import ClockJumpTracker
 from limo_ros_mcp.contract import (
     LIMO_OBSERVATION_TOPICS,
@@ -26,17 +37,47 @@ from limo_ros_mcp.contract import (
 )
 from limo_ros_mcp.messages import summarize_observation
 from limo_ros_mcp.navigation import NavigationGoalValidator
+from limo_ros_mcp.output import compact_readiness
 from limo_ros_mcp.peripherals import PeripheralInspector
+from limo_ros_mcp.profiles import select_tools
 from limo_ros_mcp.readiness import build_readiness_evidence, validate_readiness_snapshot
 from limo_ros_mcp.rosbridge import RosbridgeReadOnlyClient, validate_rosbridge_endpoint
 from limo_ros_mcp.rosclaw_gateway import RosclawGateway
 from limo_ros_mcp.roscli import RosCliReadOnlyClient
 
-LIMO_OPERATOR_CONFIRMATION_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "properties": {},
-}
+READ_ONLY_TOOL = ToolAnnotations(
+    readOnlyHint=True,
+    destructiveHint=False,
+    idempotentHint=True,
+    openWorldHint=False,
+)
+GUARDED_ACTION_TOOL = ToolAnnotations(
+    readOnlyHint=False,
+    destructiveHint=True,
+    idempotentHint=False,
+    openWorldHint=False,
+)
+EMERGENCY_TOOL = ToolAnnotations(
+    readOnlyHint=False,
+    destructiveHint=True,
+    idempotentHint=True,
+    openWorldHint=False,
+)
 
+OBSERVATION_MAX_AGE_SEC = {
+    "status": 0.3,
+    "odometry": 0.3,
+    "imu": 0.3,
+    "laser_scan": 0.5,
+    "localized_pose": 1.0,
+    "navigation_status": 0.5,
+    "map_metadata": 60.0,
+    "global_costmap": 0.5,
+    "local_costmap": 0.5,
+    "diagnostics": 2.0,
+    "tf": 0.5,
+    "tf_static": 60.0,
+}
 
 def _control_error(operation: str, exc: Exception) -> dict[str, Any]:
     return {
@@ -48,32 +89,6 @@ def _control_error(operation: str, exc: Exception) -> dict[str, Any]:
         "command_dispatched": False,
         "usable_for_real_execution": False,
     }
-
-
-def _client_supports_form_elicitation(ctx: Any) -> bool:
-    """Return whether the connected MCP client advertised form elicitation."""
-
-    try:
-        session = ctx.request_context.session
-    except (AttributeError, ValueError):
-        return False
-    client_params = getattr(session, "client_params", None)
-    capabilities = getattr(client_params, "capabilities", None)
-    elicitation = getattr(capabilities, "elicitation", None)
-    return getattr(elicitation, "form", None) is not None
-
-
-async def _elicit_operator_confirmation(ctx: Any, *, message: str) -> Any:
-    """Request one native Allow/Cancel decision without a redundant form field."""
-
-    session = ctx.request_context.session
-    return await session.elicit_form(
-        message=message,
-        requestedSchema=LIMO_OPERATOR_CONFIRMATION_SCHEMA,
-        related_request_id=ctx.request_id,
-    )
-
-
 class LimoMCPService:
     """Implementation behind the LIMO MCP tools, injectable for tests."""
 
@@ -84,11 +99,24 @@ class LimoMCPService:
         peripheral_inspector: PeripheralInspector | Any | None = None,
     ) -> None:
         self._gateway = gateway or RosclawGateway()
+        try:
+            from rosclaw.interaction import InteractionClient, InteractionCoordinator
+
+            self._interaction: Any | None = InteractionCoordinator(
+                InteractionClient(self._gateway)
+            )
+        except ImportError:
+            self._interaction = None
         self._goal_validator = goal_validator or NavigationGoalValidator()
         self._peripheral_inspector = peripheral_inspector or PeripheralInspector()
         self._clock_tracker = ClockJumpTracker()
+        self._observation_hub = ObservationHub(
+            lambda candidate, endpoint, timeout: self._client(candidate, endpoint, timeout)
+        )
         self._readiness_snapshots: OrderedDict[str, dict[str, Any]] = OrderedDict()
         self._readiness_lock = Lock()
+        self._readiness_flights: dict[tuple[str, str, str, str], Future[dict[str, Any]]] = {}
+        self._readiness_flight_lock = Lock()
 
     def _remember_readiness(self, readiness: Mapping[str, Any]) -> None:
         snapshot_hash = readiness.get("snapshot_hash")
@@ -141,6 +169,17 @@ class LimoMCPService:
                 "LIMO_READINESS_NOT_READY",
                 "The referenced readiness snapshot contains a blocking failure.",
             )
+        binding = snapshot.get("transport_binding")
+        if isinstance(binding, dict):
+            endpoint = str(binding.get("endpoint") or "")
+            transport = str(binding.get("transport") or "")
+            expected_generation = binding.get("generation")
+            current_generation = self._observation_hub.generation(transport, endpoint)
+            if current_generation != expected_generation:
+                return self._navigation_block(
+                    "LIMO_TRANSPORT_GENERATION_CHANGED",
+                    "The ROS observation transport reconnected after this readiness snapshot.",
+                )
         return {"ok": True, "readiness": snapshot}
 
     @staticmethod
@@ -213,9 +252,10 @@ class LimoMCPService:
         errors: dict[str, str] = {}
         for candidate in self._candidates(transport):
             try:
-                client = self._client(candidate, endpoint, timeout_sec)
+                client = self._observation_hub.client(candidate, endpoint, timeout_sec)
                 snapshot = client.probe()
             except Exception as exc:  # noqa: BLE001 - try the next read-only transport
+                self._observation_hub.invalidate(candidate, endpoint)
                 errors[candidate] = str(exc)
                 continue
             topic_names = set(snapshot["topics"])
@@ -294,7 +334,7 @@ class LimoMCPService:
         errors: dict[str, str] = {}
         for candidate in self._candidates(transport):
             try:
-                client = self._client(candidate, endpoint, timeout_sec)
+                client = self._observation_hub.client(candidate, endpoint, timeout_sec)
                 return self._observe_with_client(
                     observation,
                     client=client,
@@ -302,6 +342,7 @@ class LimoMCPService:
                     include_raw=include_raw,
                 )
             except Exception as exc:  # noqa: BLE001 - try the next read-only transport
+                self._observation_hub.invalidate(candidate, endpoint)
                 errors[candidate] = str(exc)
                 continue
         return {
@@ -405,9 +446,10 @@ class LimoMCPService:
         errors: dict[str, str] = {}
         for candidate in self._candidates(transport):
             try:
-                client = self._client(candidate, endpoint, timeout_sec)
+                client = self._observation_hub.client(candidate, endpoint, timeout_sec)
                 info = client.topic_info(topic, message_type)
             except Exception as exc:  # noqa: BLE001 - try the next read-only transport
+                self._observation_hub.invalidate(candidate, endpoint)
                 errors[candidate] = str(exc)
                 continue
             return {
@@ -456,11 +498,12 @@ class LimoMCPService:
         errors: dict[str, str] = {}
         for candidate in self._candidates(transport):
             try:
-                client = self._client(candidate, endpoint, timeout_sec)
+                client = self._observation_hub.client(candidate, endpoint, timeout_sec)
                 started = time.monotonic()
                 messages = client.subscribe_many(topic, message_type, count=count)
                 elapsed = time.monotonic() - started
             except Exception as exc:  # noqa: BLE001 - try the next read-only transport
+                self._observation_hub.invalidate(candidate, endpoint)
                 errors[candidate] = str(exc)
                 continue
             summaries = [summarize_observation(observation, message) for message in messages]
@@ -526,11 +569,13 @@ class LimoMCPService:
         timeout_sec = self._validate_timeout(timeout_sec)
         self._validate_transport(transport)
         transport_errors: dict[str, str] = {}
+        cutoff_monotonic = time.monotonic()
         for candidate in self._candidates(transport):
             try:
-                client = self._client(candidate, endpoint, timeout_sec)
+                client = self._observation_hub.client(candidate, endpoint, timeout_sec)
                 graph = client.probe()
             except Exception as exc:  # noqa: BLE001 - try the next read-only transport
+                self._observation_hub.invalidate(candidate, endpoint)
                 transport_errors[candidate] = str(exc)
                 continue
 
@@ -539,6 +584,7 @@ class LimoMCPService:
             records: dict[str, dict[str, Any]] = {}
             failures: dict[str, dict[str, Any]] = {}
             available: list[str] = []
+            cache_hits: list[str] = []
             for observation in observations:
                 topic, expected_type = LIMO_OBSERVATION_TOPICS[observation]
                 observed_type = observed_types.get(topic)
@@ -557,7 +603,19 @@ class LimoMCPService:
                         "command_dispatched": False,
                     }
                 else:
-                    available.append(observation)
+                    cached = self._observation_hub.cached(
+                        observation,
+                        transport=candidate,
+                        endpoint=endpoint,
+                        max_age_sec=OBSERVATION_MAX_AGE_SEC.get(observation, 0.5),
+                        cutoff_monotonic=cutoff_monotonic,
+                    )
+                    if cached is not None:
+                        summaries[observation] = dict(cached["summary"])
+                        records[observation] = cached
+                        cache_hits.append(observation)
+                    else:
+                        available.append(observation)
 
             if available:
                 with ThreadPoolExecutor(max_workers=min(12, len(available))) as executor:
@@ -594,6 +652,12 @@ class LimoMCPService:
                                 "transport": result.get("transport"),
                                 "transport_generation": result.get("transport_generation"),
                             }
+                            self._observation_hub.remember(
+                                observation,
+                                transport=candidate,
+                                endpoint=endpoint,
+                                record=records[observation],
+                            )
 
             return {
                 "ok": not failures,
@@ -605,6 +669,10 @@ class LimoMCPService:
                 "missing_count": len(failures),
                 "transport": candidate,
                 "transport_generation": getattr(client, "transport_generation", None),
+                "endpoint": endpoint,
+                "snapshot_cutoff_monotonic": cutoff_monotonic,
+                "cache_hits": sorted(cache_hits),
+                "cache": self._observation_hub.stats(),
                 "trust_level": "LIVE_ROS_TOPIC_OBSERVATION",
                 "command_dispatched": False,
             }
@@ -787,6 +855,43 @@ class LimoMCPService:
         body_id: str = "limo",
         body_snapshot_hash: str = "",
     ) -> dict[str, Any]:
+        key = (endpoint, transport, body_id, body_snapshot_hash)
+        with self._readiness_flight_lock:
+            flight = self._readiness_flights.get(key)
+            if flight is None:
+                flight = Future()
+                self._readiness_flights[key] = flight
+                leader = True
+            else:
+                leader = False
+        if not leader:
+            return flight.result(timeout=max(15.0, float(timeout_sec) + 5.0))
+        try:
+            result = self._build_patrol_readiness(
+                endpoint=endpoint,
+                timeout_sec=timeout_sec,
+                transport=transport,
+                body_id=body_id,
+                body_snapshot_hash=body_snapshot_hash,
+            )
+            flight.set_result(result)
+            return result
+        except BaseException as exc:
+            flight.set_exception(exc)
+            raise
+        finally:
+            with self._readiness_flight_lock:
+                self._readiness_flights.pop(key, None)
+
+    def _build_patrol_readiness(
+        self,
+        *,
+        endpoint: str,
+        timeout_sec: float,
+        transport: str,
+        body_id: str,
+        body_snapshot_hash: str,
+    ) -> dict[str, Any]:
         snapshot = self._collect_summaries(
             [
                 "status",
@@ -830,6 +935,12 @@ class LimoMCPService:
             now_wall=snapshot_wall,
             now_monotonic=snapshot_monotonic,
             clock_jump_detected=clock_jump_detected,
+            transport_binding={
+                "endpoint": snapshot.get("endpoint", endpoint),
+                "transport": snapshot.get("transport", transport),
+                "generation": snapshot.get("transport_generation"),
+            },
+            observation_cutoff_monotonic=snapshot.get("snapshot_cutoff_monotonic"),
         )
         self._remember_readiness(readiness)
         return {**snapshot, "readiness": readiness, "ok": readiness["ready"]}
@@ -871,8 +982,6 @@ class LimoMCPService:
         goal_tolerance_xy_m: float | None = None,
         goal_tolerance_yaw_rad: float | None = None,
         execution_mode: str = "SHADOW",
-        principal_id: str = "",
-        approval_id: str | None = None,
         action_id: str | None = None,
         wait_timeout_sec: float = 2.0,
     ) -> dict[str, Any]:
@@ -909,25 +1018,9 @@ class LimoMCPService:
         try:
             response = await self._gateway.request_navigation(
                 capability_id="limo.navigate_to_pose",
-                arguments={
-                    "schema_version": "limo.navigation.v2",
-                    "target_pose": goal,
-                    "readiness_snapshot_hash": readiness_snapshot_hash,
-                    "route_policy_id": validation["route_policy_id"],
-                    "route_policy_hash": validation["route_policy_hash"],
-                    "map_id": validation["map_id"],
-                    "map_image_hash": validation["map_image_hash"],
-                    "goal_tolerance": validation["goal_tolerance"],
-                    "expected_effect": {
-                        "kind": "navigate_to_pose",
-                        "final_frame": "map",
-                        "stop_required": True,
-                    },
-                },
+                arguments=navigation_arguments(goal, validation, readiness_snapshot_hash),
                 execution_mode=mode,
                 body_snapshot_hash=body_snapshot_hash,
-                principal_id=principal_id,
-                approval_id=approval_id,
                 body_id="limo",
                 action_id=action_id,
                 required_evidence="TASK_VERIFIED",
@@ -972,7 +1065,7 @@ class LimoMCPService:
         if not validation["ok"]:
             return validation
         goal = validation["normalized_goal"]
-        arguments = self._navigation_arguments(goal, validation, readiness_snapshot_hash)
+        arguments = navigation_arguments(goal, validation, readiness_snapshot_hash)
         try:
             prepared = self._gateway.prepare_operator_action(
                 capability_id="limo.navigate_to_pose",
@@ -983,12 +1076,7 @@ class LimoMCPService:
                 deadline_at=deadline_at,
                 required_evidence="TASK_VERIFIED",
                 timeout_sec=120.0,
-                display={
-                    "title": "Move LIMO to a patrol waypoint",
-                    "summary": "Run daemon-owned preflight and send one bounded move_base goal.",
-                    "target_pose": goal,
-                    "physical_effect": "The mobile base will move and then stop at the waypoint.",
-                },
+                display=navigation_display(goal),
             )
         except Exception as exc:  # noqa: BLE001 - MCP boundary returns structured errors
             return _control_error("prepare_navigation_confirmation", exc)
@@ -1000,89 +1088,6 @@ class LimoMCPService:
             "navigation_contract": validation,
             "command_dispatched": False,
             "usable_for_real_execution": False,
-        }
-
-    @staticmethod
-    def _navigation_arguments(
-        goal: Mapping[str, Any],
-        validation: Mapping[str, Any],
-        readiness_snapshot_hash: str,
-    ) -> dict[str, Any]:
-        return {
-            "schema_version": "limo.navigation.v2",
-            "target_pose": dict(goal),
-            "readiness_snapshot_hash": readiness_snapshot_hash,
-            "route_policy_id": validation["route_policy_id"],
-            "route_policy_hash": validation["route_policy_hash"],
-            "map_id": validation["map_id"],
-            "map_image_hash": validation["map_image_hash"],
-            "goal_tolerance": validation["goal_tolerance"],
-            "expected_effect": {
-                "kind": "navigate_to_pose",
-                "final_frame": "map",
-                "stop_required": True,
-            },
-        }
-
-    @staticmethod
-    def _validate_tone(
-        *,
-        frequency_hz: int,
-        duration_sec: float,
-        volume_percent: int,
-        body_snapshot_hash: str,
-    ) -> dict[str, Any]:
-        if not str(body_snapshot_hash).strip():
-            return LimoMCPService._navigation_block(
-                "BODY_SNAPSHOT_REQUIRED",
-                "Speaker requests require an immutable LIMO body snapshot.",
-            )
-        if isinstance(frequency_hz, bool) or frequency_hz not in {440, 660, 880}:
-            return LimoMCPService._navigation_block(
-                "LIMO_TONE_FREQUENCY_INVALID",
-                "frequency_hz must be one of 440, 660, or 880.",
-            )
-        if (
-            isinstance(duration_sec, bool)
-            or not isinstance(duration_sec, (int, float))
-            or not 0.2 <= float(duration_sec) <= 1.0
-        ):
-            return LimoMCPService._navigation_block(
-                "LIMO_TONE_DURATION_INVALID",
-                "duration_sec must be within [0.2, 1.0].",
-            )
-        if (
-            isinstance(volume_percent, bool)
-            or not isinstance(volume_percent, int)
-            or not 5 <= volume_percent <= 25
-        ):
-            return LimoMCPService._navigation_block(
-                "LIMO_TONE_VOLUME_INVALID",
-                "volume_percent must be an integer within [5, 25].",
-            )
-        return {
-            "ok": True,
-            "decision": "ALLOW",
-            "normalized_tone": {
-                "frequency_hz": frequency_hz,
-                "duration_sec": float(duration_sec),
-                "volume_percent": volume_percent,
-            },
-        }
-
-    @staticmethod
-    def _tone_arguments(tone: Mapping[str, Any]) -> dict[str, Any]:
-        return {
-            "schema_version": "limo.tone.v1",
-            "frequency_hz": tone["frequency_hz"],
-            "duration_sec": tone["duration_sec"],
-            "volume_percent": tone["volume_percent"],
-            "expected_effect": {
-                "kind": "speaker_tone",
-                "playback_required": True,
-                "mixer_restore_required": True,
-                "microphone_loopback_required": True,
-            },
         }
 
     async def request_tone(
@@ -1103,7 +1108,7 @@ class LimoMCPService:
             )
         if isinstance(wait_timeout_sec, bool) or not 0.0 <= float(wait_timeout_sec) <= 30.0:
             raise ValueError("wait_timeout_sec must be within [0, 30]")
-        validation = self._validate_tone(
+        validation = validate_tone(
             frequency_hz=frequency_hz,
             duration_sec=duration_sec,
             volume_percent=volume_percent,
@@ -1119,7 +1124,7 @@ class LimoMCPService:
         try:
             response = await self._gateway.request_tone(
                 capability_id="limo.play_tone",
-                arguments=self._tone_arguments(validation["normalized_tone"]),
+                arguments=tone_arguments(validation["normalized_tone"]),
                 execution_mode=mode,
                 body_snapshot_hash=body_snapshot_hash,
                 body_id="limo",
@@ -1142,7 +1147,7 @@ class LimoMCPService:
         action_id: str,
         deadline_at: str,
     ) -> dict[str, Any]:
-        validation = self._validate_tone(
+        validation = validate_tone(
             frequency_hz=frequency_hz,
             duration_sec=duration_sec,
             volume_percent=volume_percent,
@@ -1154,22 +1159,14 @@ class LimoMCPService:
         try:
             prepared = self._gateway.prepare_operator_action(
                 capability_id="limo.play_tone",
-                arguments=self._tone_arguments(tone),
+                arguments=tone_arguments(tone),
                 body_snapshot_hash=body_snapshot_hash,
                 body_id="limo",
                 action_id=action_id,
                 deadline_at=deadline_at,
                 required_evidence="TASK_VERIFIED",
                 timeout_sec=10.0,
-                display={
-                    "title": "Play a short LIMO speaker tone",
-                    "summary": (
-                        "Play one bounded synthesized tone, verify it through the onboard "
-                        "microphone, and restore the mixer state."
-                    ),
-                    "tone": tone,
-                    "physical_effect": "The robot speaker will emit a short audible tone.",
-                },
+                display=tone_display(tone),
             )
         except Exception as exc:  # noqa: BLE001 - MCP boundary returns structured errors
             return _control_error("prepare_tone_confirmation", exc)
@@ -1193,8 +1190,6 @@ class LimoMCPService:
         body_snapshot_hash: str,
         route_policy_id: str = "lab-default",
         execution_mode: str = "SHADOW",
-        principal_id: str = "",
-        approval_id: str | None = None,
         action_id: str | None = None,
         deadline_at: str | None = None,
         wait_timeout_sec: float = 2.0,
@@ -1220,28 +1215,18 @@ class LimoMCPService:
         )
         if not validation["ok"]:
             return validation
+        if mode == "REAL":
+            return self._navigation_block(
+                "MCP_OPERATOR_CONFIRMATION_REQUIRED",
+                "REAL localization initialization must use the MCP in-context confirmation flow.",
+            )
         pose = validation["normalized_goal"]
         try:
             response = await self._gateway.request_initial_pose(
                 capability_id="limo.set_initial_pose",
-                arguments={
-                    "schema_version": "limo.initial-pose.v1",
-                    "target_pose": pose,
-                    "route_policy_id": validation["route_policy_id"],
-                    "route_policy_hash": validation["route_policy_hash"],
-                    "map_id": validation["map_id"],
-                    "map_image_hash": validation["map_image_hash"],
-                    "covariance_diagonal": [0.25, 0.25, 0.0, 0.0, 0.0, 0.0685],
-                    "expected_effect": {
-                        "kind": "localization_initialized",
-                        "final_frame": "map",
-                        "map_to_odom_required": True,
-                    },
-                },
+                arguments=initial_pose_arguments(pose, validation),
                 execution_mode=mode,
                 body_snapshot_hash=body_snapshot_hash,
-                principal_id=principal_id,
-                approval_id=approval_id,
                 body_id="limo",
                 action_id=action_id,
                 deadline_at=deadline_at,
@@ -1282,7 +1267,7 @@ class LimoMCPService:
         if not validation["ok"]:
             return validation
         pose = validation["normalized_goal"]
-        arguments = self._initial_pose_arguments(pose, validation)
+        arguments = initial_pose_arguments(pose, validation)
         try:
             prepared = self._gateway.prepare_operator_action(
                 capability_id="limo.set_initial_pose",
@@ -1293,12 +1278,7 @@ class LimoMCPService:
                 deadline_at=deadline_at,
                 required_evidence="TASK_VERIFIED",
                 timeout_sec=15.0,
-                display={
-                    "title": "Initialize LIMO localization",
-                    "summary": "Publish one bounded /initialpose estimate through rosclawd.",
-                    "target_pose": pose,
-                    "physical_effect": "Localization changes; no drive command is requested.",
-                },
+                display=initial_pose_display(pose),
             )
         except Exception as exc:  # noqa: BLE001 - MCP boundary returns structured errors
             return _control_error("prepare_initial_pose_confirmation", exc)
@@ -1312,69 +1292,32 @@ class LimoMCPService:
             "usable_for_real_execution": False,
         }
 
-    async def confirm_prepared_action(
+    async def complete_real_action(
         self,
         *,
+        ctx: Any,
+        proposal: dict[str, Any],
+        contract_key: str,
         prepared_action: Any,
         approval_request: Mapping[str, Any],
         wait_timeout_sec: float,
-        request_id: str | None,
-        operation: str,
     ) -> dict[str, Any]:
-        """Submit a host-confirmed proposal while keeping the permit opaque to the Agent."""
+        """Delegate all generic interaction behavior to the ROSClaw SDK."""
 
-        principal_id = os.environ.get("ROSCLAW_OPERATOR_PRINCIPAL", "local-operator").strip()
-        confirmation = {
-            "accepted": True,
-            "action_intent_hash": approval_request.get("action_intent_hash"),
-            "reason": "Operator accepted the exact LIMO action through MCP elicitation",
-            "channel": "mcp_elicitation",
-            "request_id": request_id,
-        }
-        try:
-            return await self._gateway.confirm_operator_action(
-                prepared_action,
-                principal_id=principal_id,
-                confirmation=confirmation,
-                wait_timeout_sec=wait_timeout_sec,
+        if self._interaction is None:
+            return _control_error(
+                "operator_confirmation",
+                RuntimeError(
+                    "ROSClaw Interaction SDK is unavailable; install the sibling rosclaw checkout"
+                ),
             )
-        except Exception as exc:  # noqa: BLE001 - MCP boundary returns structured errors
-            return _control_error(operation, exc)
-
-    async def confirm_prepared_initial_pose(
-        self,
-        *,
-        prepared_action: Any,
-        approval_request: Mapping[str, Any],
-        wait_timeout_sec: float,
-        request_id: str | None,
-    ) -> dict[str, Any]:
-        return await self.confirm_prepared_action(
+        result = await self._interaction.complete_prepared(
+            ctx,
             prepared_action=prepared_action,
             approval_request=approval_request,
             wait_timeout_sec=wait_timeout_sec,
-            request_id=request_id,
-            operation="confirm_initial_pose",
         )
-
-    @staticmethod
-    def _initial_pose_arguments(
-        pose: Mapping[str, Any], validation: Mapping[str, Any]
-    ) -> dict[str, Any]:
-        return {
-            "schema_version": "limo.initial-pose.v1",
-            "target_pose": dict(pose),
-            "route_policy_id": validation["route_policy_id"],
-            "route_policy_hash": validation["route_policy_hash"],
-            "map_id": validation["map_id"],
-            "map_image_hash": validation["map_image_hash"],
-            "covariance_diagonal": [0.25, 0.25, 0.0, 0.0, 0.0, 0.0685],
-            "expected_effect": {
-                "kind": "localization_initialized",
-                "final_frame": "map",
-                "map_to_odom_required": True,
-            },
-        }
+        return {**result, contract_key: proposal.get(contract_key)}
 
     async def action_status(self, action_id: str) -> dict[str, Any]:
         try:
@@ -1399,7 +1342,12 @@ class LimoMCPService:
             return result
 
 
-def build_mcp_server(service: LimoMCPService | None = None) -> FastMCP:
+def build_mcp_server(
+    service: LimoMCPService | None = None,
+    *,
+    profile: str = "core",
+    compat_tools: bool = False,
+) -> FastMCP:
     """Build the standalone LIMO MCP server."""
 
     implementation = service or LimoMCPService()
@@ -1417,9 +1365,7 @@ def build_mcp_server(service: LimoMCPService | None = None) -> FastMCP:
         ctx: Context[Any, Any, Any],
         proposal: dict[str, Any],
         *,
-        message: str,
         contract_key: str,
-        operation: str,
         wait_timeout_sec: float,
     ) -> dict[str, Any]:
         prepared_action = proposal.pop("prepared_action", None)
@@ -1428,64 +1374,108 @@ def build_mcp_server(service: LimoMCPService | None = None) -> FastMCP:
             return proposal
         if not isinstance(approval_request, dict):
             return _control_error(
-                operation,
+                "prepare_operator_action",
                 RuntimeError("ROSClaw returned no operator confirmation request"),
             )
-        if not _client_supports_form_elicitation(ctx):
-            return {
-                **_control_error(
-                    "operator_confirmation",
-                    RuntimeError("MCP client does not advertise form elicitation"),
-                ),
-                "error_code": "MCP_ELICITATION_UNAVAILABLE",
-                "approval_request": approval_request,
-                "message": (
-                    "This MCP client cannot render the required operator confirmation. "
-                    "Use a client with MCP form elicitation enabled and retry."
-                ),
-            }
-        try:
-            elicited = await _elicit_operator_confirmation(ctx, message=message)
-        except Exception as exc:  # noqa: BLE001 - unsupported clients fail closed
-            return {
-                **_control_error("operator_confirmation", exc),
-                "error_code": "MCP_ELICITATION_UNAVAILABLE",
-                "approval_request": approval_request,
-                "message": (
-                    "This MCP client did not complete the operator confirmation. "
-                    "Enable MCP elicitations and retry the same tool call."
-                ),
-            }
-        accepted = str(elicited.action) == "accept"
-        if not accepted:
-            return {
-                "ok": False,
-                "decision": "CANCELLED",
-                "error_code": "OPERATOR_CONFIRMATION_DECLINED",
-                "message": "The operator declined or cancelled the REAL action.",
-                "approval_request": approval_request,
-                "command_dispatched": False,
-                "usable_for_real_execution": False,
-            }
-        result = await implementation.confirm_prepared_action(
+        return await implementation.complete_real_action(
+            ctx=ctx,
+            proposal=proposal,
             prepared_action=prepared_action,
             approval_request=approval_request,
             wait_timeout_sec=wait_timeout_sec,
-            request_id=str(ctx.request_id),
-            operation=operation,
+            contract_key=contract_key,
         )
-        return {**result, contract_key: proposal.get(contract_key)}
 
-    @mcp.tool(description="Return the source-backed LIMO ROS interface and safety contract.")
+    @mcp.tool(
+        description="Return the source-backed LIMO ROS interface and safety contract.",
+        annotations=READ_ONLY_TOOL,
+    )
     def limo_get_contract() -> dict[str, Any]:
         return implementation.get_contract()
 
-    @mcp.tool(description="List named LIMO ROS observations, optionally filtered by category.")
+    @mcp.tool(
+        description=(
+            "Return a bounded LIMO operator context with daemon status, readiness, map policy, "
+            "and current blockers."
+        ),
+        annotations=READ_ONLY_TOOL,
+    )
+    async def limo_get_context(
+        endpoint: str = "ws://127.0.0.1:9090",
+        timeout_sec: float = 5.0,
+        transport: str = "auto",
+        body_snapshot_hash: str = "",
+    ) -> dict[str, Any]:
+        readiness_task = asyncio.to_thread(
+            implementation.patrol_readiness,
+            endpoint,
+            timeout_sec,
+            transport,
+            "limo",
+            body_snapshot_hash,
+        )
+        readiness_result, runtime_result = await asyncio.gather(
+            readiness_task,
+            implementation.runtime_status(),
+        )
+        readiness = readiness_result.get("readiness", {})
+        observations = readiness.get("observations", {}) if isinstance(readiness, dict) else {}
+        map_observation = (
+            observations.get("map_metadata", {}) if isinstance(observations, dict) else {}
+        )
+        return {
+            "ok": bool(readiness_result.get("ok")),
+            "schema_version": "limo.context.v1",
+            "body": {"body_id": "limo", "snapshot_hash": body_snapshot_hash or None},
+            "runtime": {
+                key: runtime_result.get(key)
+                for key in (
+                    "running",
+                    "supervision_state",
+                    "southbound_owner",
+                    "driver_ready",
+                    "generation",
+                )
+                if key in runtime_result
+            },
+            "readiness": {
+                key: readiness.get(key)
+                for key in (
+                    "state",
+                    "ready",
+                    "blockers",
+                    "warnings",
+                    "snapshot_hash",
+                    "expires_at",
+                    "transport_binding",
+                )
+                if key in readiness
+            },
+            "map": {
+                "summary_hash": map_observation.get("summary_hash"),
+                "policy_id": readiness.get("policy_id") if isinstance(readiness, dict) else None,
+                "policy_hash": readiness.get("policy_hash")
+                if isinstance(readiness, dict)
+                else None,
+            },
+            "risk_blockers": readiness.get("blockers", [])
+            if isinstance(readiness, dict)
+            else [],
+            "recent_receipt_id": None,
+            "command_dispatched": False,
+            "usable_for_real_execution": False,
+        }
+
+    @mcp.tool(
+        description="List named LIMO ROS observations, optionally filtered by category.",
+        annotations=READ_ONLY_TOOL,
+    )
     def limo_list_observations(category: str = "all") -> dict[str, Any]:
         return implementation.list_observations(category)
 
     @mcp.tool(
-        description="Read the ROS graph and verify required LIMO topics without moving the robot."
+        description="Read the ROS graph and verify required LIMO topics without moving the robot.",
+        annotations=READ_ONLY_TOOL,
     )
     async def limo_probe_ros(
         endpoint: str = "ws://127.0.0.1:9090",
@@ -1495,7 +1485,9 @@ def build_mcp_server(service: LimoMCPService | None = None) -> FastMCP:
         return await asyncio.to_thread(implementation.probe_ros, endpoint, transport, timeout_sec)
 
     @mcp.tool(
-        description="Read one allowlisted LIMO telemetry topic; no publish primitive is exposed."
+        description="Read one allowlisted LIMO telemetry topic; no publish primitive is exposed.",
+        annotations=READ_ONLY_TOOL,
+        meta={"physicalExecution": False},
     )
     async def limo_observe(
         observation: str,
@@ -1736,7 +1728,36 @@ def build_mcp_server(service: LimoMCPService | None = None) -> FastMCP:
             body_snapshot_hash,
         )
 
-    @mcp.tool(description="Validate a LIMO move_base goal without dispatching it.")
+    @mcp.tool(
+        description=(
+            "Return one coherent, hash-sealed patrol-readiness snapshot from the bounded "
+            "ObservationHub cache."
+        ),
+        annotations=READ_ONLY_TOOL,
+    )
+    async def limo_get_readiness(
+        endpoint: str = "ws://127.0.0.1:9090",
+        timeout_sec: float = 10.0,
+        transport: str = "auto",
+        body_id: str = "limo",
+        body_snapshot_hash: str = "",
+        detail: str = "summary",
+    ) -> dict[str, Any]:
+        result = await asyncio.to_thread(
+            implementation.patrol_readiness,
+            endpoint,
+            timeout_sec,
+            transport,
+            body_id,
+            body_snapshot_hash,
+        )
+        return compact_readiness(result, detail=detail)
+
+    @mcp.tool(
+        description="Validate a LIMO move_base goal without dispatching it.",
+        annotations=READ_ONLY_TOOL,
+        meta={"physicalExecution": False},
+    )
     def limo_validate_navigation_goal(
         x: float,
         y: float,
@@ -1785,7 +1806,9 @@ def build_mcp_server(service: LimoMCPService | None = None) -> FastMCP:
         description=(
             "Submit a validated LIMO move_base goal to rosclawd. REAL runs daemon-owned "
             "preflight and uses an in-context single-action operator confirmation."
-        )
+        ),
+        annotations=GUARDED_ACTION_TOOL,
+        meta={"physicalExecution": True, "operatorConfirmation": "internal"},
     )
     async def limo_request_navigation(
         ctx: Context[Any, Any, Any],
@@ -1821,22 +1844,10 @@ def build_mcp_server(service: LimoMCPService | None = None) -> FastMCP:
                 action_id=exact_action_id,
                 deadline_at=exact_deadline,
             )
-            approval = proposal.get("approval_request", {})
-            display = approval.get("display", {}) if isinstance(approval, dict) else {}
-            message = (
-                "Confirm one REAL LIMO action\n"
-                "Robot: limo\n"
-                "Action: move to one patrol waypoint (/move_base)\n"
-                f"Target: {display.get('target_pose')}\n"
-                f"Deadline: {approval.get('deadline_at') if isinstance(approval, dict) else None}\n"
-                "Effect: the mobile base will move and then stop."
-            )
             return await complete_real_confirmation(
                 ctx,
                 proposal,
-                message=message,
                 contract_key="navigation_contract",
-                operation="confirm_navigation",
                 wait_timeout_sec=wait_timeout_sec,
             )
         return await implementation.request_navigation(
@@ -1858,7 +1869,9 @@ def build_mcp_server(service: LimoMCPService | None = None) -> FastMCP:
         description=(
             "Play one bounded synthesized tone through the LIMO USB speaker via rosclawd. "
             "REAL uses an in-context single-action confirmation and restores mixer state."
-        )
+        ),
+        annotations=GUARDED_ACTION_TOOL,
+        meta={"physicalExecution": True, "operatorConfirmation": "internal"},
     )
     async def limo_request_tone(
         ctx: Context[Any, Any, Any],
@@ -1884,22 +1897,10 @@ def build_mcp_server(service: LimoMCPService | None = None) -> FastMCP:
                 action_id=exact_action_id,
                 deadline_at=exact_deadline,
             )
-            approval = proposal.get("approval_request", {})
-            display = approval.get("display", {}) if isinstance(approval, dict) else {}
-            message = (
-                "Confirm one REAL LIMO action\n"
-                "Robot: limo\n"
-                "Action: play one short speaker tone\n"
-                f"Tone: {display.get('tone')}\n"
-                f"Deadline: {approval.get('deadline_at') if isinstance(approval, dict) else None}\n"
-                "Effect: the robot speaker will emit a short audible tone."
-            )
             return await complete_real_confirmation(
                 ctx,
                 proposal,
-                message=message,
                 contract_key="tone_contract",
-                operation="confirm_tone",
                 wait_timeout_sec=wait_timeout_sec,
             )
         return await implementation.request_tone(
@@ -1917,7 +1918,9 @@ def build_mcp_server(service: LimoMCPService | None = None) -> FastMCP:
             "Submit a map-validated AMCL initial-pose estimate to rosclawd. The daemon-owned "
             "LIMO executor is the only component allowed to publish /initialpose. REAL mode "
             "uses an in-context operator confirmation; permit identifiers are never inputs."
-        )
+        ),
+        annotations=GUARDED_ACTION_TOOL,
+        meta={"physicalExecution": True, "operatorConfirmation": "internal"},
     )
     async def limo_request_initial_pose(
         ctx: Context[Any, Any, Any],
@@ -1947,68 +1950,12 @@ def build_mcp_server(service: LimoMCPService | None = None) -> FastMCP:
                 action_id=exact_action_id,
                 deadline_at=exact_deadline,
             )
-            prepared_action = proposal.pop("prepared_action", None)
-            approval_request = proposal.get("approval_request")
-            if proposal.get("ok") is not True or prepared_action is None:
-                return proposal
-            if not isinstance(approval_request, dict):
-                return _control_error(
-                    "prepare_initial_pose_confirmation",
-                    RuntimeError("ROSClaw returned no operator confirmation request"),
-                )
-            if not _client_supports_form_elicitation(ctx):
-                return {
-                    **_control_error(
-                        "operator_confirmation",
-                        RuntimeError("MCP client does not advertise form elicitation"),
-                    ),
-                    "error_code": "MCP_ELICITATION_UNAVAILABLE",
-                    "approval_request": approval_request,
-                    "message": (
-                        "This MCP client cannot render the required operator confirmation. "
-                        "Use a client with MCP form elicitation enabled and retry."
-                    ),
-                }
-            display = approval_request.get("display", {})
-            target = display.get("target_pose", {}) if isinstance(display, dict) else {}
-            message = (
-                "Confirm one REAL LIMO action\n"
-                "Robot: limo\n"
-                "Action: initialize localization (/initialpose)\n"
-                f"Target: {target}\n"
-                f"Deadline: {approval_request.get('deadline_at')}\n"
-                "Effect: localization changes; no drive command is requested."
-            )
-            try:
-                elicited = await _elicit_operator_confirmation(ctx, message=message)
-            except Exception as exc:  # noqa: BLE001 - unsupported clients fail closed
-                return {
-                    **_control_error("operator_confirmation", exc),
-                    "error_code": "MCP_ELICITATION_UNAVAILABLE",
-                    "approval_request": approval_request,
-                    "message": (
-                        "This MCP client did not complete the operator confirmation. "
-                        "Enable MCP elicitations and retry the same tool call."
-                    ),
-                }
-            accepted = str(elicited.action) == "accept"
-            if not accepted:
-                return {
-                    "ok": False,
-                    "decision": "CANCELLED",
-                    "error_code": "OPERATOR_CONFIRMATION_DECLINED",
-                    "message": "The operator declined or cancelled the REAL action.",
-                    "approval_request": approval_request,
-                    "command_dispatched": False,
-                    "usable_for_real_execution": False,
-                }
-            result = await implementation.confirm_prepared_initial_pose(
-                prepared_action=prepared_action,
-                approval_request=approval_request,
+            return await complete_real_confirmation(
+                ctx,
+                proposal,
+                contract_key="initial_pose_contract",
                 wait_timeout_sec=wait_timeout_sec,
-                request_id=str(ctx.request_id),
             )
-            return {**result, "initial_pose_contract": proposal.get("initial_pose_contract")}
         return await implementation.request_initial_pose(
             x=x,
             y=y,
@@ -2022,11 +1969,14 @@ def build_mcp_server(service: LimoMCPService | None = None) -> FastMCP:
             wait_timeout_sec=wait_timeout_sec,
         )
 
-    @mcp.tool(description="Read an action state from rosclawd.")
+    @mcp.tool(description="Read an action state from rosclawd.", annotations=READ_ONLY_TOOL)
     async def limo_get_action_status(action_id: str) -> dict[str, Any]:
         return await implementation.action_status(action_id)
 
-    @mcp.tool(description="Read the canonical execution receipt from rosclawd.")
+    @mcp.tool(
+        description="Read the canonical execution receipt from rosclawd.",
+        annotations=READ_ONLY_TOOL,
+    )
     async def limo_get_execution_receipt(action_id: str) -> dict[str, Any]:
         return await implementation.execution_receipt(action_id)
 
@@ -2034,20 +1984,40 @@ def build_mcp_server(service: LimoMCPService | None = None) -> FastMCP:
         description=(
             "Request emergency stop through rosclawd. This cannot prove physical motion stopped; "
             "use the certified hardware E-stop whenever motion may be active."
-        )
+        ),
+        annotations=EMERGENCY_TOOL,
+        meta={"physicalExecution": True, "operatorConfirmation": "emergency"},
     )
     async def limo_emergency_stop(reason: str) -> dict[str, Any]:
         return await implementation.emergency_stop(reason)
 
+    available = {tool.name for tool in mcp._tool_manager.list_tools()}
+    selected = select_tools(profile, available, compat_tools=compat_tools)
+    for tool_name in available - selected:
+        mcp._tool_manager.remove_tool(tool_name)
     return mcp
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="ROSClaw AgileX LIMO MCP server")
     parser.add_argument("--transport", choices=["stdio", "http", "sse"], default="stdio")
+    parser.add_argument(
+        "--profile",
+        choices=["core", "inspection", "full"],
+        default=os.environ.get("ROSCLAW_LIMO_MCP_PROFILE", "core"),
+    )
+    parser.add_argument(
+        "--compat-tools",
+        action="store_true",
+        default=os.environ.get("ROSCLAW_LIMO_MCP_COMPAT_TOOLS", "").lower()
+        in {"1", "true", "yes", "on"},
+    )
     args = parser.parse_args(argv)
-    transport = "streamable-http" if args.transport == "http" else args.transport
-    build_mcp_server().run(transport=transport)  # type: ignore[arg-type]
+    transport = cast(
+        Literal["stdio", "sse", "streamable-http"],
+        "streamable-http" if args.transport == "http" else args.transport,
+    )
+    build_mcp_server(profile=args.profile, compat_tools=args.compat_tools).run(transport=transport)
     return 0
 
 

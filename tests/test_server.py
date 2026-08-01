@@ -53,7 +53,7 @@ def test_dabai_camera_contract_uses_live_astra_topics() -> None:
 
 @pytest.mark.asyncio
 async def test_server_exposes_no_raw_ros_publish_tool() -> None:
-    server = build_mcp_server(LimoMCPService(gateway=object()))
+    server = build_mcp_server(LimoMCPService(gateway=object()), profile="full")
     tools = await server.list_tools()
     names = {tool.name for tool in tools}
 
@@ -61,6 +61,7 @@ async def test_server_exposes_no_raw_ros_publish_tool() -> None:
         "limo_get_base_state",
         "limo_get_camera_state",
         "limo_get_contract",
+        "limo_get_context",
         "limo_get_audio_state",
         "limo_get_action_status",
         "limo_get_dabai_device_state",
@@ -72,6 +73,7 @@ async def test_server_exposes_no_raw_ros_publish_tool() -> None:
         "limo_get_map_summary",
         "limo_get_navigation_state",
         "limo_get_patrol_readiness",
+        "limo_get_readiness",
         "limo_get_platform_health",
         "limo_get_runtime_status",
         "limo_get_topic_info",
@@ -107,6 +109,7 @@ async def test_server_exposes_no_raw_ros_publish_tool() -> None:
     }:
         assert schemas[name]["properties"]["timeout_sec"]["default"] == 5.0
     assert schemas["limo_get_patrol_readiness"]["properties"]["timeout_sec"]["default"] == 10.0
+    assert schemas["limo_get_readiness"]["properties"]["timeout_sec"]["default"] == 10.0
     navigation_properties = schemas["limo_request_navigation"]["properties"]
     assert navigation_properties["wait_timeout_sec"]["default"] == 2.0
     assert "readiness_snapshot_hash" in schemas["limo_request_navigation"]["required"]
@@ -116,6 +119,32 @@ async def test_server_exposes_no_raw_ros_publish_tool() -> None:
         "costmap_ready",
         "obstacle_check_enabled",
     }.isdisjoint(navigation_properties)
+
+
+@pytest.mark.asyncio
+async def test_core_and_inspection_profiles_bound_tool_discovery() -> None:
+    core = await build_mcp_server(LimoMCPService(gateway=object())).list_tools()
+    inspection = await build_mcp_server(
+        LimoMCPService(gateway=object()), profile="inspection"
+    ).list_tools()
+    compat = await build_mcp_server(
+        LimoMCPService(gateway=object()), compat_tools=True
+    ).list_tools()
+
+    core_names = {tool.name for tool in core}
+    inspection_names = {tool.name for tool in inspection}
+    compat_names = {tool.name for tool in compat}
+    assert len(core_names) == 10
+    assert "limo_get_context" in core_names
+    assert "limo_get_readiness" in core_names
+    assert "limo_get_patrol_readiness" not in core_names
+    assert "limo_get_audio_state" in inspection_names
+    assert "limo_request_navigation" not in inspection_names
+    assert "limo_get_patrol_readiness" in compat_names
+
+    annotations = {tool.name: tool.annotations for tool in core}
+    assert annotations["limo_get_context"].readOnlyHint is True
+    assert annotations["limo_request_navigation"].destructiveHint is True
 
 
 def test_rosbridge_endpoint_defaults_to_loopback_only(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -389,7 +418,7 @@ async def test_request_navigation_blocks_before_daemon_without_snapshot() -> Non
 
 
 @pytest.mark.asyncio
-async def test_request_initial_pose_submits_exact_daemon_contract() -> None:
+async def test_request_initial_pose_submits_exact_shadow_contract() -> None:
     gateway = FakeGateway()
     service = LimoMCPService(gateway=gateway, goal_validator=FakeGoalValidator())
     result = await service.request_initial_pose(
@@ -398,7 +427,7 @@ async def test_request_initial_pose_submits_exact_daemon_contract() -> None:
         yaw=0.35,
         frame_id="map",
         body_snapshot_hash="sha256:test-body-snapshot",
-        execution_mode="REAL",
+        execution_mode="SHADOW",
         action_id="action-limo-initial-pose",
         deadline_at="2030-01-02T03:04:05Z",
         wait_timeout_sec=0.0,
@@ -406,7 +435,7 @@ async def test_request_initial_pose_submits_exact_daemon_contract() -> None:
     assert result["state"] == "QUEUED"
     call = gateway.calls[0]
     assert call["capability_id"] == "limo.set_initial_pose"
-    assert call["execution_mode"] == "REAL"
+    assert call["execution_mode"] == "SHADOW"
     assert call["deadline_at"] == "2030-01-02T03:04:05Z"
     assert call["arguments"]["schema_version"] == "limo.initial-pose.v1"
     assert call["arguments"]["target_pose"]["frame_id"] == "map"
@@ -419,6 +448,22 @@ async def test_request_initial_pose_submits_exact_daemon_contract() -> None:
         0.0685,
     ]
     assert call["arguments"]["expected_effect"]["map_to_odom_required"] is True
+
+
+@pytest.mark.asyncio
+async def test_direct_real_initial_pose_requires_contextual_interaction() -> None:
+    gateway = FakeGateway()
+    service = LimoMCPService(gateway=gateway, goal_validator=FakeGoalValidator())
+    result = await service.request_initial_pose(
+        x=0.0,
+        y=0.0,
+        yaw=0.0,
+        frame_id="map",
+        body_snapshot_hash="sha256:test-body-snapshot",
+        execution_mode="REAL",
+    )
+    assert result["error_code"] == "MCP_OPERATOR_CONFIRMATION_REQUIRED"
+    assert gateway.calls == []
 
 
 class FakeElicitationContext:
@@ -488,12 +533,10 @@ async def test_real_initial_pose_uses_elicitation_and_hides_permit_input() -> No
     )
 
     assert result["state"] == "QUEUED"
-    assert result["operator_confirmation"]["permit_injected"] is True
-    assert result["operator_confirmation"]["permit_exposed"] is False
-    assert "permit" not in str(result).lower().replace("permit_injected", "").replace(
-        "permit_exposed", ""
-    )
-    assert context.messages and "Target:" in context.messages[0]
+    assert result["interaction"]["decision"] == "CONFIRMED"
+    assert "permit" not in str(result).lower()
+    assert "action_intent_hash" not in str(result)
+    assert context.messages and "target_pose" in context.messages[0]
     assert context.schemas == [{"type": "object", "properties": {}}]
     assert [call["operation"] for call in gateway.calls] == ["prepare", "confirm"]
 
@@ -541,8 +584,9 @@ async def test_real_initial_pose_fails_fast_without_form_elicitation() -> None:
         convert_result=False,
     )
 
-    assert result["error_code"] == "MCP_ELICITATION_UNAVAILABLE"
+    assert result["error_code"] == "APPROVAL_CHANNEL_UNAVAILABLE"
     assert result["command_dispatched"] is False
+    assert "approval_request" not in result
     assert [call["operation"] for call in gateway.calls] == ["prepare"]
 
 
@@ -647,7 +691,8 @@ async def test_real_navigation_uses_elicitation_and_hides_permit_input() -> None
     )
 
     assert result["state"] == "QUEUED"
-    assert result["operator_confirmation"]["permit_injected"] is True
+    assert result["interaction"]["decision"] == "CONFIRMED"
+    assert "permit" not in str(result).lower()
     assert context.messages and "mobile base will move" in context.messages[0]
     assert [call["operation"] for call in gateway.calls] == ["prepare", "confirm"]
     assert gateway.calls[0]["capability_id"] == "limo.navigate_to_pose"
@@ -693,7 +738,8 @@ async def test_tone_shadow_and_real_confirmation_contracts() -> None:
     )
 
     assert result["state"] == "QUEUED"
-    assert result["operator_confirmation"]["permit_exposed"] is False
+    assert result["interaction"]["decision"] == "CONFIRMED"
+    assert "permit" not in str(result).lower()
     assert [call["operation"] for call in gateway.calls] == ["prepare", "confirm"]
     assert gateway.calls[0]["capability_id"] == "limo.play_tone"
 
