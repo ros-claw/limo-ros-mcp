@@ -47,12 +47,16 @@ uv pip install -e '.[dev]'
 codex mcp add rosclaw-limo \
   --env ROSCLAW_PROJECT_ROOT=/absolute/path/to/rosclaw \
   --env ROS_PACKAGE_PATH=/absolute/path/to/catkin_ws/src:/opt/ros/melodic/share \
+  --env LD_LIBRARY_PATH=/absolute/path/to/catkin_ws/devel/lib:/opt/ros/melodic/lib \
+  --env CMAKE_PREFIX_PATH=/absolute/path/to/catkin_ws/devel:/opt/ros/melodic \
   -- /absolute/path/to/limo-ros-mcp/.venv/bin/python -m limo_ros_mcp.server
 codex mcp list
 ```
 
 当获准的巡检策略使用 `package://` 地图资源时，必须配置 `ROS_PACKAGE_PATH`；
-缺失时导航验证会在下发前按失败关闭。首次添加服务器或工具 schema 变化后，
+TF 检查调用 `rospack`、`rosrun` 等 ROS 辅助程序时还必须配置 `LD_LIBRARY_PATH`
+和 `CMAKE_PREFIX_PATH`。缺失时导航验证或 readiness 会在下发前按失败关闭。
+首次添加服务器或工具 schema 变化后，
 需要让 Codex 重新发现工具。REAL
 确认还要求 Codex 允许 MCP elicitation，并由用户本人审核，而不是自动审核：
 

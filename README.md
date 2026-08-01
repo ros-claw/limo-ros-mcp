@@ -71,11 +71,15 @@ Register the stdio server with absolute paths:
 codex mcp add rosclaw-limo \
   --env ROSCLAW_PROJECT_ROOT=/absolute/path/to/rosclaw \
   --env ROS_PACKAGE_PATH=/absolute/path/to/catkin_ws/src:/opt/ros/melodic/share \
+  --env LD_LIBRARY_PATH=/absolute/path/to/catkin_ws/devel/lib:/opt/ros/melodic/lib \
+  --env CMAKE_PREFIX_PATH=/absolute/path/to/catkin_ws/devel:/opt/ros/melodic \
   -- /absolute/path/to/limo-ros-mcp/.venv/bin/python -m limo_ros_mcp.server
 ```
 
 `ROS_PACKAGE_PATH` is required when the approved patrol policy uses `package://` map
-artifacts; without it, navigation validation fails closed before dispatch. `codex mcp list`
+artifacts. `LD_LIBRARY_PATH` and `CMAKE_PREFIX_PATH` are required by ROS helper binaries
+such as `rospack` and `rosrun` during TF inspection. Without them, navigation validation
+or readiness fails closed before dispatch. `codex mcp list`
 confirms the configuration. After initially adding the server or changing its tool schema,
 let Codex rediscover the tools. REAL initial-pose execution uses MCP elicitation in the same
 tool call; the permit is injected internally and never appears as a tool input or result.
