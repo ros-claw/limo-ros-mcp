@@ -79,6 +79,11 @@ OBSERVATION_MAX_AGE_SEC = {
     "tf_static": 60.0,
 }
 
+# ROS 1 CLI observations spawn one short-lived process per topic.  The LIMO
+# Jetson cannot reliably service the complete readiness fan-out at once, even
+# though the same topics are healthy when sampled in smaller groups.
+ROSCLI_MAX_CONCURRENT_OBSERVATIONS = 8
+
 
 def _control_error(operation: str, exc: Exception) -> dict[str, Any]:
     return {
@@ -619,7 +624,8 @@ class LimoMCPService:
                         available.append(observation)
 
             if available:
-                with ThreadPoolExecutor(max_workers=min(12, len(available))) as executor:
+                worker_limit = ROSCLI_MAX_CONCURRENT_OBSERVATIONS if candidate == "roscli" else 12
+                with ThreadPoolExecutor(max_workers=min(worker_limit, len(available))) as executor:
                     future_names = {
                         executor.submit(
                             self._observe_with_client,
