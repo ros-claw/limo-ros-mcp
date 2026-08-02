@@ -110,6 +110,12 @@ one-second microphone baseline, captures the microphone concurrently with playba
 requires target-frequency level, baseline gain, and adjacent-frequency prominence before
 claiming acoustic output. PCM is analyzed only in memory and is never returned or retained.
 
+Version 0.8.9 makes deployment freshness visible. `limo_get_runtime_status` now returns
+`mcp_process`, including a source fingerprint and `restart_required`, plus an
+`interaction_plane` section that fails closed when the connected daemon predates the
+Operator Broker. After pulling MCP or ROSClaw changes, verify both restart flags before a
+REAL request; a repository update does not hot-reload an already running MCP server or daemon.
+
 ## Read-only robot check
 
 An operator starts the existing LIMO stack. rosbridge is optional because `transport=auto` falls back to fixed read-only `rostopic`/`rosnode` commands:

@@ -44,6 +44,7 @@ from limo_ros_mcp.readiness import build_readiness_evidence, validate_readiness_
 from limo_ros_mcp.rosbridge import RosbridgeReadOnlyClient, validate_rosbridge_endpoint
 from limo_ros_mcp.rosclaw_gateway import RosclawGateway
 from limo_ros_mcp.roscli import RosCliReadOnlyClient
+from limo_ros_mcp.runtime_info import interaction_plane_status, mcp_process_status
 
 READ_ONLY_TOOL = ToolAnnotations(
     readOnlyHint=True,
@@ -1029,9 +1030,18 @@ class LimoMCPService:
 
     async def runtime_status(self) -> dict[str, Any]:
         try:
-            return await self._gateway.runtime_status()
+            runtime = await self._gateway.runtime_status()
+            return {
+                **runtime,
+                "mcp_process": mcp_process_status(),
+                "interaction_plane": interaction_plane_status(runtime),
+            }
         except Exception as exc:  # noqa: BLE001 - MCP boundary returns structured errors
-            return _control_error("runtime_status", exc)
+            return {
+                **_control_error("runtime_status", exc),
+                "mcp_process": mcp_process_status(),
+                "interaction_plane": interaction_plane_status({}),
+            }
 
     async def request_navigation(
         self,
@@ -1499,6 +1509,8 @@ def build_mcp_server(
                     "southbound_owner",
                     "driver_ready",
                     "generation",
+                    "mcp_process",
+                    "interaction_plane",
                 )
                 if key in runtime_result
             },

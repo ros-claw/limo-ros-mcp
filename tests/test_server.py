@@ -15,10 +15,56 @@ import pytest
 from limo_ros_mcp.contract import LIMO_OBSERVATION_TOPICS
 from limo_ros_mcp.evidence import seal_snapshot
 from limo_ros_mcp.rosbridge import validate_rosbridge_endpoint
+from limo_ros_mcp.runtime_info import interaction_plane_status, mcp_process_status
 from limo_ros_mcp.server import (
     LimoMCPService,
     build_mcp_server,
 )
+
+
+def test_mcp_process_status_exposes_bounded_restart_evidence() -> None:
+    result = mcp_process_status()
+
+    assert result["schema_version"] == "limo.mcp-process.v1"
+    assert result["server_name"] == "rosclaw-limo"
+    assert result["package_version"] == "0.8.9"
+    assert isinstance(result["distribution_version"], str)
+    assert isinstance(result["installation_metadata_matches_source"], bool)
+    assert isinstance(result["pid"], int)
+    assert str(result["instance_id"]).startswith("limo-mcp-")
+    assert str(result["startup_source_fingerprint"]).startswith("sha256:")
+    assert str(result["current_source_fingerprint"]).startswith("sha256:")
+    assert result["source_changed_since_start"] is False
+    assert result["restart_required"] is False
+
+
+def test_interaction_plane_reports_stale_and_current_daemons() -> None:
+    stale = interaction_plane_status({"running": True})
+    current = interaction_plane_status(
+        {"running": True, "operator_proposals": {"pending": 0, "total": 0}}
+    )
+
+    assert stale["operator_broker_available"] is False
+    assert stale["real_confirmation_ready"] is False
+    assert stale["daemon_restart_required"] is True
+    assert current["operator_broker_available"] is True
+    assert current["real_confirmation_ready"] is True
+    assert current["daemon_restart_required"] is False
+
+
+@pytest.mark.asyncio
+async def test_runtime_status_includes_mcp_and_interaction_provenance() -> None:
+    class RuntimeGateway:
+        async def runtime_status(self) -> dict[str, Any]:
+            return {
+                "running": True,
+                "operator_proposals": {"pending": 0, "total": 0},
+            }
+
+    result = await LimoMCPService(gateway=RuntimeGateway()).runtime_status()
+
+    assert result["mcp_process"]["server_name"] == "rosclaw-limo"
+    assert result["interaction_plane"]["real_confirmation_ready"] is True
 
 
 def test_package_and_manifest_versions_match() -> None:
