@@ -71,6 +71,12 @@ approvals_reviewer = "user"
 普通只读、SHADOW 和 MCP 协议测试不需要新开 Codex 会话；已运行会话是否会
 热更新工具 schema 取决于客户端版本。
 
+`limo_get_runtime_status` 会返回 `mcp_process` 与 `interaction_plane`。更新代码后，
+如果 `mcp_process.restart_required=true`，说明常驻 MCP 进程仍在执行旧代码；如果
+`interaction_plane.daemon_restart_required=true`，说明当前 rosclawd 尚未加载 Operator
+Broker。两项都恢复为 `false` 后，才应使用重构后的 REAL 确认链路。拉取代码本身不会
+热更新已经运行的 MCP server 或 rosclawd。
+
 操作员启动 ROS 栈后，可运行只读真机集成测试：
 
 ```bash

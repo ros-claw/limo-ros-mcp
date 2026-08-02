@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "limo-ros-mcp"
-version = "0.8.8"
+version = "0.8.9"
 description = "Inspection-focused MCP server for the AgileX LIMO ROS 1 platform"
 readme = "README.md"
 license = {text = "MIT"}
