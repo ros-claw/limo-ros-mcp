@@ -7,7 +7,7 @@
   "entrypoint": "limo-ros-mcp",
   "execution_boundary": "rosclawd",
   "direct_cmd_vel_exposed": false,
-  "mcp_tool_count": 30,
+  "mcp_tool_count": 32,
   "observation_count": 27,
   "source_repositories": [
     "https://github.com/agilexrobotics/limo_ros",
