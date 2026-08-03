@@ -440,9 +440,9 @@ class LimoMCPService:
 
     @staticmethod
     def _supplement_tf_summary(
-        summary: dict[str, Any], resolver: RosCliReadOnlyClient
+        summary: dict[str, Any], *, composed_chain_available: bool
     ) -> dict[str, Any]:
-        """Add the two readiness-critical TF edges through fixed tf_echo lookups."""
+        """Prove the readiness-critical TF chain through one fixed tf_echo lookup."""
 
         transforms = [
             dict(value) for value in summary.get("transforms", []) if isinstance(value, dict)
@@ -454,17 +454,18 @@ class LimoMCPService:
             )
             for value in transforms
         }
-        for parent, child in (("map", "odom"), ("odom", "base_link")):
-            edge = (parent, child)
-            if edge not in seen and resolver.transform_available(parent, child):
-                transforms.append(
-                    {
-                        "parent_frame": parent,
-                        "child_frame": child,
-                        "source": "tf_echo",
-                    }
-                )
-                seen.add(edge)
+        # A successful composed lookup is only possible when TF can resolve the
+        # live map -> odom -> base_link chain.  One bounded process is more
+        # reliable on the Jetson than racing two independent tf_echo nodes.
+        edge = ("map", "base_link")
+        if edge not in seen and composed_chain_available:
+            transforms.append(
+                {
+                    "parent_frame": edge[0],
+                    "child_frame": edge[1],
+                    "source": "tf_echo_composed",
+                }
+            )
         return {"transform_count": len(transforms), "transforms": transforms}
 
     def topic_info(
@@ -628,6 +629,7 @@ class LimoMCPService:
                 }
             ]
             supplemental: RosCliReadOnlyClient | None = None
+            tf_chain_resolved: bool | None = None
             for observation in observations:
                 topic, expected_type = LIMO_OBSERVATION_TOPICS[observation]
                 observed_type = observed_types.get(topic)
@@ -680,41 +682,51 @@ class LimoMCPService:
                     )
 
             # A full 1984x1984 global costmap takes roughly 25 seconds to become
-            # JSON over rosbridge on the LIMO Jetson.  Read its header and metadata
-            # first through the existing fixed, --noarr ROS CLI allowlist, then
-            # collect high-rate observations through rosbridge so their evidence
-            # remains inside one coherent window.
-            if (
-                candidate == "rosbridge"
-                and supplemental is not None
-                and "global_costmap" in available
-            ):
-                available.remove("global_costmap")
-                try:
-                    result = self._observe_with_client(
-                        "global_costmap",
-                        client=supplemental,
-                        transport="local_roscli_read_only",
-                        include_raw=False,
-                    )
-                except Exception as exc:  # noqa: BLE001 - preserve partial evidence
-                    failures["global_costmap"] = {
-                        "ok": False,
-                        "observation": "global_costmap",
-                        "error_code": "LIMO_OBSERVATION_FAILED",
-                        "error": str(exc),
-                        "command_dispatched": False,
-                    }
-                else:
-                    if isinstance(result.get("summary"), dict):
-                        summaries["global_costmap"] = result["summary"]
-                        records["global_costmap"] = {
-                            "summary": result["summary"],
-                            "received_wall_time": result.get("received_wall_time"),
-                            "received_monotonic": result.get("received_monotonic"),
-                            "transport": result.get("transport"),
-                            "transport_generation": result.get("transport_generation"),
-                        }
+            # JSON over rosbridge on the LIMO Jetson.  Resolve its fixed --noarr
+            # metadata and the composed TF chain concurrently, then immediately
+            # collect all high-rate rosbridge evidence inside one coherent window.
+            if candidate == "rosbridge" and supplemental is not None:
+                with ThreadPoolExecutor(max_workers=2) as executor:
+                    preflight_futures: dict[Any, str] = {}
+                    if "global_costmap" in available:
+                        available.remove("global_costmap")
+                        preflight_futures[
+                            executor.submit(
+                                self._observe_with_client,
+                                "global_costmap",
+                                client=supplemental,
+                                transport="local_roscli_read_only",
+                                include_raw=False,
+                            )
+                        ] = "global_costmap"
+                    if "tf" in available:
+                        preflight_futures[
+                            executor.submit(supplemental.transform_available, "map", "base_link")
+                        ] = "tf_resolution"
+                    for future in as_completed(preflight_futures):
+                        purpose = preflight_futures[future]
+                        try:
+                            result = future.result()
+                        except Exception as exc:  # noqa: BLE001 - preserve partial evidence
+                            failures[purpose] = {
+                                "ok": False,
+                                "observation": purpose,
+                                "error_code": "LIMO_OBSERVATION_FAILED",
+                                "error": str(exc),
+                                "command_dispatched": False,
+                            }
+                            continue
+                        if purpose == "tf_resolution":
+                            tf_chain_resolved = bool(result)
+                        elif isinstance(result.get("summary"), dict):
+                            summaries["global_costmap"] = result["summary"]
+                            records["global_costmap"] = {
+                                "summary": result["summary"],
+                                "received_wall_time": result.get("received_wall_time"),
+                                "received_monotonic": result.get("received_monotonic"),
+                                "transport": result.get("transport"),
+                                "transport_generation": result.get("transport_generation"),
+                            }
 
             if available:
                 worker_limit = ROSCLI_MAX_CONCURRENT_OBSERVATIONS if candidate == "roscli" else 12
@@ -749,21 +761,11 @@ class LimoMCPService:
                                 "command_dispatched": False,
                             }
                             continue
-                        if observation == "tf" and supplemental is not None:
-                            try:
-                                result["summary"] = self._supplement_tf_summary(
-                                    result["summary"], supplemental
-                                )
-                                result["received_wall_time"] = time.time()
-                                result["received_monotonic"] = time.monotonic()
-                            except Exception as exc:  # noqa: BLE001 - preserve partial TF
-                                failures["tf_resolution"] = {
-                                    "ok": False,
-                                    "observation": "tf_resolution",
-                                    "error_code": "LIMO_OBSERVATION_FAILED",
-                                    "error": str(exc),
-                                    "command_dispatched": False,
-                                }
+                        if observation == "tf" and tf_chain_resolved is not None:
+                            result["summary"] = self._supplement_tf_summary(
+                                result["summary"],
+                                composed_chain_available=tf_chain_resolved,
+                            )
                         if isinstance(result.get("summary"), dict):
                             summaries[observation] = result["summary"]
                             records[observation] = {

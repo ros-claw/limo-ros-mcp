@@ -36,6 +36,22 @@ def test_binary_sensor_summary_decodes_roscli_noarr_lengths() -> None:
     assert summary["data_truncated"] is True
 
 
+def test_binary_sensor_summary_decodes_rosbridge_base64_length() -> None:
+    summary = summarize_binary_sensor(
+        {
+            "height": 1,
+            "width": 4,
+            "encoding": "mono8",
+            "step": 4,
+            "data": "AQIDBA==",
+        }
+    )
+
+    assert summary["data_length"] == 4
+    assert summary["data_truncated"] is False
+    assert summary["data_transport_encoding"] == "base64"
+
+
 def test_camera_info_summary_reports_calibration_shape() -> None:
     summary = summarize_camera_info(
         {

@@ -491,7 +491,7 @@ def test_rosbridge_readiness_supplements_critical_tf_edges(
         transport_generation = "roscli-tf"
 
         def transform_available(self, parent: str, child: str) -> bool:
-            return (parent, child) in {("map", "odom"), ("odom", "base_link")}
+            return (parent, child) == ("map", "base_link")
 
     rosbridge = FakeRosbridgeClient()
     roscli = FakeRoscliClient()
@@ -515,7 +515,7 @@ def test_rosbridge_readiness_supplements_critical_tf_edges(
         (item["parent_frame"].lstrip("/"), item["child_frame"].lstrip("/"))
         for item in result["summaries"]["tf"]["transforms"]
     }
-    assert {("map", "odom"), ("odom", "base_link")} <= edges
+    assert ("map", "base_link") in edges
 
 
 def test_roscli_readiness_collection_limits_process_fanout(
