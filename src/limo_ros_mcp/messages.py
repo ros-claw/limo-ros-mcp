@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
+import contextlib
 import math
 import re
 import time
@@ -428,9 +431,15 @@ def summarize_tf(message: dict[str, Any]) -> dict[str, Any]:
 def summarize_binary_sensor(message: dict[str, Any]) -> dict[str, Any]:
     data = message.get("data")
     data_placeholder = ARRAY_PLACEHOLDER_RE.fullmatch(data) if isinstance(data, str) else None
+    decoded_base64_length: int | None = None
+    if isinstance(data, str) and data_placeholder is None:
+        with contextlib.suppress(binascii.Error, ValueError):
+            decoded_base64_length = len(base64.b64decode(data, validate=True))
     data_length = (
         int(data_placeholder.group(1))
         if data_placeholder is not None
+        else decoded_base64_length
+        if decoded_base64_length is not None
         else len(data)
         if isinstance(data, (str, bytes, list))
         else 0
@@ -455,6 +464,7 @@ def summarize_binary_sensor(message: dict[str, Any]) -> dict[str, Any]:
         ),
         "data_length": data_length,
         "data_truncated": data_placeholder is not None,
+        "data_transport_encoding": "base64" if decoded_base64_length is not None else None,
     }
 
 

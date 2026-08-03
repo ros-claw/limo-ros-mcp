@@ -66,6 +66,23 @@ def test_roscli_builds_melodic_environment_without_inherited_ros_vars(
     assert "/opt/ros/melodic/lib/python2.7/dist-packages" in environment["PYTHONPATH"]
 
 
+def test_transform_available_accepts_success_after_initial_failure(monkeypatch: Any) -> None:
+    def run(command: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        output = (
+            "Failure at 0.000\n"
+            "At time 12.3\n"
+            "- Translation: [0.0, 0.0, 0.0]\n"
+            "- Rotation: in Quaternion [0.0, 0.0, 0.0, 1.0]\n"
+        )
+        return subprocess.CompletedProcess(command, 124, stdout=output, stderr="")
+
+    monkeypatch.setattr("shutil.which", lambda name: f"/opt/ros/melodic/bin/{name}")
+    monkeypatch.setattr("subprocess.run", run)
+    client = RosCliReadOnlyClient({})
+
+    assert client.transform_available("map", "odom") is True
+
+
 def test_roscli_samples_multiple_yaml_documents(monkeypatch: Any) -> None:
     def run(command: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
         output = (

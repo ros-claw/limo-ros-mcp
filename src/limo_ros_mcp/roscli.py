@@ -186,7 +186,7 @@ class RosCliReadOnlyClient:
     def transform_available(self, parent_frame: str, child_frame: str) -> bool:
         """Resolve one fixed TF edge without publishing or exposing an arbitrary command."""
 
-        allowed = {("map", "odom"), ("odom", "base_link")}
+        allowed = {("map", "odom"), ("odom", "base_link"), ("map", "base_link")}
         if (parent_frame, child_frame) not in allowed:
             raise ValueError("transform is not present in the immutable readiness allowlist")
         timeout_sec = max(0.2, min(self.timeout_sec, 2.0))
@@ -214,4 +214,9 @@ class RosCliReadOnlyClient:
         if result.returncode not in {0, 124}:
             error = result.stderr.strip() or output.strip() or "tf_echo failed"
             raise RuntimeError(error)
-        return "At time" in output and "Failure" not in output
+        # ``tf_echo`` may print an initial lookup failure while its listener is
+        # filling, followed by one or more valid transforms.  Treat the latter
+        # as authoritative instead of rejecting the whole bounded transcript.
+        return bool(
+            re.search(r"^At time\s+\S+", output, flags=re.MULTILINE) and "- Translation:" in output
+        )

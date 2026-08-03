@@ -458,9 +458,64 @@ def test_rosbridge_readiness_uses_noarr_cli_summary_for_global_costmap(
         {
             "transport": "local_roscli_read_only",
             "generation": "roscli-summary",
-            "purpose": "global_costmap_metadata_noarr",
+            "purpose": "global_costmap_metadata_and_tf_resolution",
         },
     ]
+
+
+def test_rosbridge_readiness_supplements_critical_tf_edges(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeRosbridgeClient:
+        transport_generation = "rosbridge-primary"
+
+        def probe(self) -> dict[str, Any]:
+            return {"topics": ["/tf"], "types": ["tf2_msgs/TFMessage"], "nodes": []}
+
+        def subscribe_many(
+            self, _topic: str, _message_type: str, *, count: int
+        ) -> list[dict[str, Any]]:
+            return [
+                {
+                    "transforms": [
+                        {
+                            "header": {"frame_id": "/base_link"},
+                            "child_frame_id": "/imu_link",
+                        }
+                    ]
+                }
+                for _ in range(count)
+            ]
+
+    class FakeRoscliClient:
+        transport_generation = "roscli-tf"
+
+        def transform_available(self, parent: str, child: str) -> bool:
+            return (parent, child) == ("map", "base_link")
+
+    rosbridge = FakeRosbridgeClient()
+    roscli = FakeRoscliClient()
+    monkeypatch.setattr(
+        LimoMCPService,
+        "_client",
+        staticmethod(lambda *_args, **_kwargs: rosbridge),
+    )
+    monkeypatch.setattr(
+        "limo_ros_mcp.server.RosCliReadOnlyClient", lambda *_args, **_kwargs: roscli
+    )
+
+    result = LimoMCPService(gateway=object())._collect_summaries(
+        ["tf"],
+        endpoint="ws://127.0.0.1:9090",
+        timeout_sec=5.0,
+        transport="rosbridge",
+    )
+
+    edges = {
+        (item["parent_frame"].lstrip("/"), item["child_frame"].lstrip("/"))
+        for item in result["summaries"]["tf"]["transforms"]
+    }
+    assert ("map", "base_link") in edges
 
 
 def test_roscli_readiness_collection_limits_process_fanout(
