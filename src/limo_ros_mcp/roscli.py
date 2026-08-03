@@ -214,4 +214,9 @@ class RosCliReadOnlyClient:
         if result.returncode not in {0, 124}:
             error = result.stderr.strip() or output.strip() or "tf_echo failed"
             raise RuntimeError(error)
-        return "At time" in output and "Failure" not in output
+        # ``tf_echo`` may print an initial lookup failure while its listener is
+        # filling, followed by one or more valid transforms.  Treat the latter
+        # as authoritative instead of rejecting the whole bounded transcript.
+        return bool(
+            re.search(r"^At time\s+\S+", output, flags=re.MULTILINE) and "- Translation:" in output
+        )
