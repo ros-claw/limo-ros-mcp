@@ -266,6 +266,16 @@ def test_tone_worker_rejects_unallowlisted_explicit_pulse_server(monkeypatch) ->
         TONE._pulse_server()
 
 
+def test_tone_worker_bounds_pulse_capture_chunks() -> None:
+    command = TONE._pulse_capture_command(
+        TONE.ALLOWED_PULSE_SERVER,
+        "alsa_input.usb-0c76_USB_PnP_Audio_Device-00.analog-stereo",
+    )
+
+    assert "--latency-msec=20" in command
+    assert "--process-time-msec=20" in command
+
+
 def test_tone_worker_uses_reference_gain_and_restores_alsa_state(monkeypatch) -> None:
     calls: list[tuple[int, int, bool, bool]] = []
     monkeypatch.setattr(TONE, "_usb_audio_card", lambda: 2)

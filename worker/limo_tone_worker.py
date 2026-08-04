@@ -372,6 +372,8 @@ def _pulse_capture_command(server, source):
         "--format=s16le",
         "--rate=%d" % SAMPLE_RATE_HZ,
         "--channels=1",
+        "--latency-msec=20",
+        "--process-time-msec=20",
         "--raw",
     ]
 
