@@ -27,7 +27,7 @@ def test_mcp_process_status_exposes_bounded_restart_evidence() -> None:
 
     assert result["schema_version"] == "limo.mcp-process.v1"
     assert result["server_name"] == "rosclaw-limo"
-    assert result["package_version"] == "0.8.9"
+    assert result["package_version"] == "0.9.0"
     assert isinstance(result["distribution_version"], str)
     assert isinstance(result["installation_metadata_matches_source"], bool)
     assert isinstance(result["pid"], int)
@@ -73,7 +73,7 @@ def test_package_and_manifest_versions_match() -> None:
     project = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
 
     assert manifest["version"] == project["project"]["version"]
-    assert manifest["mcp_tool_count"] == 32
+    assert manifest["mcp_tool_count"] == 33
 
 
 def test_dabai_camera_contract_uses_live_astra_topics() -> None:
@@ -134,6 +134,7 @@ async def test_server_exposes_no_raw_ros_publish_tool() -> None:
         "limo_request_navigation",
         "limo_request_initial_pose",
         "limo_request_tone",
+        "limo_request_speech",
         "limo_sample_topic",
         "limo_emergency_stop",
         "limo_validate_navigation_goal",
@@ -182,7 +183,7 @@ async def test_core_and_inspection_profiles_bound_tool_discovery() -> None:
     core_names = {tool.name for tool in core}
     inspection_names = {tool.name for tool in inspection}
     compat_names = {tool.name for tool in compat}
-    assert len(core_names) == 10
+    assert len(core_names) == 11
     assert "limo_get_context" in core_names
     assert "limo_get_readiness" in core_names
     assert "limo_get_patrol_readiness" not in core_names
@@ -354,7 +355,7 @@ def test_readiness_collection_reuses_preflighted_transport_and_aggregates_tf(
     assert result["summaries"]["tf"]["transform_count"] == 2
 
 
-def test_rosbridge_readiness_samples_tf_long_enough_for_multiple_publishers(
+def test_rosbridge_readiness_bounds_tf_sampling_window(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class FakeRosbridgeClient:
@@ -370,7 +371,7 @@ def test_rosbridge_readiness_samples_tf_long_enough_for_multiple_publishers(
         def subscribe_many(
             self, _topic: str, _message_type: str, *, count: int
         ) -> list[dict[str, Any]]:
-            assert count == 100
+            assert count == 5
             return [
                 {
                     "transforms": [
@@ -458,7 +459,7 @@ def test_rosbridge_readiness_uses_noarr_cli_summary_for_global_costmap(
         {
             "transport": "local_roscli_read_only",
             "generation": "roscli-summary",
-            "purpose": "global_costmap_metadata_and_tf_resolution",
+            "purpose": "costmap_laser_and_tf_readiness_evidence",
         },
     ]
 
@@ -516,6 +517,132 @@ def test_rosbridge_readiness_supplements_critical_tf_edges(
         for item in result["summaries"]["tf"]["transforms"]
     }
     assert ("map", "base_link") in edges
+
+
+def test_rosbridge_readiness_collects_laser_through_bounded_roscli(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeRosbridgeClient:
+        transport_generation = "rosbridge-primary"
+
+        def probe(self) -> dict[str, Any]:
+            return {"topics": ["/scan"], "types": ["sensor_msgs/LaserScan"], "nodes": []}
+
+        def subscribe_many(self, *_args: Any, **_kwargs: Any) -> list[dict[str, Any]]:
+            raise AssertionError("readiness must not transfer LaserScan through rosbridge")
+
+    class FakeRoscliClient:
+        transport_generation = "roscli-laser"
+
+        def subscribe_many(
+            self, _topic: str, _message_type: str, *, count: int
+        ) -> list[dict[str, Any]]:
+            assert count == 1
+            return [
+                {
+                    "header": {"stamp": {"secs": 10, "nsecs": 0}, "frame_id": "laser_link"},
+                    "angle_min": -1.0,
+                    "angle_increment": 1.0,
+                    "range_min": 0.1,
+                    "range_max": 12.0,
+                    "ranges": [1.0, 2.0, 3.0],
+                }
+            ]
+
+    rosbridge = FakeRosbridgeClient()
+    roscli = FakeRoscliClient()
+    monkeypatch.setattr(
+        LimoMCPService,
+        "_client",
+        staticmethod(lambda *_args, **_kwargs: rosbridge),
+    )
+    monkeypatch.setattr(
+        "limo_ros_mcp.server.RosCliReadOnlyClient", lambda *_args, **_kwargs: roscli
+    )
+
+    result = LimoMCPService(gateway=object())._collect_summaries(
+        ["laser_scan"],
+        endpoint="ws://127.0.0.1:9090",
+        timeout_sec=5.0,
+        transport="rosbridge",
+    )
+
+    assert result["ok"] is True
+    assert result["summaries"]["laser_scan"]["sample_count"] == 3
+    assert result["observation_records"]["laser_scan"]["transport"] == ("local_roscli_read_only")
+
+
+def test_rosbridge_readiness_uses_fixed_slow_workers_then_one_batch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeRosbridgeClient:
+        transport_generation = "rosbridge-primary"
+
+        def __init__(self) -> None:
+            self.batch_calls = 0
+
+        def probe(self) -> dict[str, Any]:
+            return {
+                "topics": ["/move_base/global_costmap/costmap", "/scan", "/limo_status"],
+                "types": [
+                    "nav_msgs/OccupancyGrid",
+                    "sensor_msgs/LaserScan",
+                    "limo_base/LimoStatus",
+                ],
+                "nodes": [],
+            }
+
+        def subscribe_batch(self, topic_types: dict[str, str]) -> dict[str, dict[str, Any]]:
+            self.batch_calls += 1
+            assert topic_types == {"/limo_status": "limo_base/LimoStatus"}
+            return {
+                "/limo_status": {
+                    "message": {"battery_voltage": 12.0, "error_code": 0, "motion_mode": 1},
+                    "received_wall_time": time.time(),
+                    "received_monotonic": time.monotonic(),
+                }
+            }
+
+    class FakeRoscliClient:
+        transport_generation = "roscli-parallel"
+
+        def subscribe_many(
+            self, topic: str, _message_type: str, *, count: int
+        ) -> list[dict[str, Any]]:
+            assert count == 1
+            if topic == "/scan":
+                return [
+                    {
+                        "angle_min": -1.0,
+                        "angle_increment": 1.0,
+                        "range_min": 0.1,
+                        "range_max": 12.0,
+                        "ranges": [1.0, 2.0, 3.0],
+                    }
+                ]
+            return [{"info": {"resolution": 0.05, "width": 20, "height": 20}}]
+
+    rosbridge = FakeRosbridgeClient()
+    roscli = FakeRoscliClient()
+    monkeypatch.setattr(
+        LimoMCPService,
+        "_client",
+        staticmethod(lambda *_args, **_kwargs: rosbridge),
+    )
+    monkeypatch.setattr(
+        "limo_ros_mcp.server.RosCliReadOnlyClient", lambda *_args, **_kwargs: roscli
+    )
+
+    result = LimoMCPService(gateway=object())._collect_summaries(
+        ["global_costmap", "laser_scan", "status"],
+        endpoint="ws://127.0.0.1:9090",
+        timeout_sec=5.0,
+        transport="rosbridge",
+    )
+
+    assert result["ok"] is True
+    assert set(result["summaries"]) == {"global_costmap", "laser_scan", "status"}
+    assert rosbridge.batch_calls == 1
 
 
 def test_roscli_readiness_collection_limits_process_fanout(
@@ -608,6 +735,9 @@ class FakeGateway:
         return await self.request_navigation(**kwargs)
 
     async def request_tone(self, **kwargs: Any) -> dict[str, Any]:
+        return await self.request_navigation(**kwargs)
+
+    async def request_speech(self, **kwargs: Any) -> dict[str, Any]:
         return await self.request_navigation(**kwargs)
 
     def prepare_operator_action(self, **kwargs: Any) -> Any:
@@ -1031,6 +1161,59 @@ async def test_tone_shadow_and_real_confirmation_contracts() -> None:
     assert "permit" not in str(result).lower()
     assert [call["operation"] for call in gateway.calls] == ["prepare", "confirm"]
     assert gateway.calls[0]["capability_id"] == "limo.play_tone"
+
+
+@pytest.mark.asyncio
+async def test_speech_shadow_and_real_confirmation_contracts() -> None:
+    gateway = FakeGateway()
+    service = LimoMCPService(gateway=gateway, goal_validator=FakeGoalValidator())
+    shadow = await service.request_speech(
+        text="你好，我是 LIMO 巡检机器人。",
+        language="cmn",
+        volume_percent=18,
+        rate_wpm=160,
+        body_snapshot_hash="sha256:test-body-snapshot",
+        execution_mode="SHADOW",
+        action_id="action-speech-shadow",
+        wait_timeout_sec=0.0,
+    )
+    assert shadow["state"] == "QUEUED"
+    assert gateway.calls[0]["capability_id"] == "limo.speak_text"
+    assert gateway.calls[0]["arguments"]["expected_effect"] == {
+        "kind": "speaker_speech",
+        "playback_required": True,
+        "mixer_restore_required": True,
+        "microphone_loopback_required": True,
+        "content_recognition_required": False,
+    }
+
+    gateway.calls.clear()
+    server = build_mcp_server(service)
+    tools = {tool.name: tool for tool in await server.list_tools()}
+    schema = tools["limo_request_speech"].inputSchema
+    assert "approval_id" not in schema["properties"]
+    assert schema["properties"]["language"]["default"] == "cmn"
+    result = await server._tool_manager.call_tool(
+        "limo_request_speech",
+        {
+            "text": "你好，我是 LIMO 巡检机器人。",
+            "body_snapshot_hash": "sha256:test-body-snapshot",
+            "language": "cmn",
+            "volume_percent": 18,
+            "rate_wpm": 160,
+            "execution_mode": "REAL",
+            "action_id": "action-speech-real",
+            "deadline_at": "2030-01-02T03:04:05Z",
+            "wait_timeout_sec": 0.0,
+        },
+        context=FakeElicitationContext(accepted=True),
+        convert_result=False,
+    )
+
+    assert result["state"] == "QUEUED"
+    assert result["interaction"]["decision"] == "CONFIRMED"
+    assert [call["operation"] for call in gateway.calls] == ["prepare", "confirm"]
+    assert gateway.calls[0]["capability_id"] == "limo.speak_text"
 
 
 @pytest.mark.asyncio

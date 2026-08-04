@@ -5,6 +5,8 @@ from __future__ import annotations
 import subprocess
 from typing import Any
 
+import pytest
+
 from limo_ros_mcp.roscli import RosCliReadOnlyClient, build_ros1_cli_environment
 
 
@@ -179,6 +181,7 @@ def test_roscli_resolves_only_fixed_readiness_transforms(monkeypatch: Any) -> No
     client = RosCliReadOnlyClient({"/tf": "tf2_msgs/TFMessage"})
 
     assert client.transform_available("map", "odom") is True
+    assert calls[0][2] == "5"
     assert calls[0][-4:] == ["tf", "tf_echo", "map", "odom"]
     try:
         client.transform_available("map", "camera_link")
@@ -186,3 +189,56 @@ def test_roscli_resolves_only_fixed_readiness_transforms(monkeypatch: Any) -> No
         assert "immutable readiness allowlist" in str(exc)
     else:
         raise AssertionError("unexpected transform was not rejected")
+
+
+def test_freshness_critical_topics_use_bounded_readiness_worker(monkeypatch: Any) -> None:
+    calls: list[tuple[list[str], dict[str, Any]]] = []
+
+    def run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        calls.append((command, kwargs))
+        if command[0].endswith("rostopic"):
+            return subprocess.CompletedProcess(
+                command, 0, stdout="sensor_msgs/LaserScan\n", stderr=""
+            )
+        assert '"observation":"laser_scan"' in kwargs["input"]
+        output = (
+            '{"ok":true,"protocol":"rosclaw.limo.readiness-worker.v1",'
+            '"observation":"laser_scan","message":{"ranges":[1.0]}}\n'
+        )
+        return subprocess.CompletedProcess(command, 0, stdout=output, stderr="")
+
+    monkeypatch.setattr("shutil.which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr("subprocess.run", run)
+    monkeypatch.setattr("limo_ros_mcp.roscli.Path.is_file", lambda _path: True)
+    client = RosCliReadOnlyClient({"/scan": "sensor_msgs/LaserScan"})
+
+    messages = client.subscribe_many("/scan", "sensor_msgs/LaserScan", count=1)
+
+    assert messages == [{"ranges": [1.0]}]
+    worker_command, worker_kwargs = calls[-1]
+    assert worker_command[0] == "/usr/bin/python2"
+    assert worker_command[1].endswith("worker/limo_readiness_worker.py")
+    assert worker_kwargs["timeout"] == 7.0
+
+
+def test_readiness_worker_rejects_mismatched_response(monkeypatch: Any) -> None:
+    def run(command: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        if command[0].endswith("rostopic"):
+            return subprocess.CompletedProcess(
+                command, 0, stdout="nav_msgs/OccupancyGrid\n", stderr=""
+            )
+        output = (
+            '{"ok":true,"protocol":"rosclaw.limo.readiness-worker.v1",'
+            '"observation":"laser_scan","message":{}}\n'
+        )
+        return subprocess.CompletedProcess(command, 0, stdout=output, stderr="")
+
+    monkeypatch.setattr("shutil.which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr("subprocess.run", run)
+    monkeypatch.setattr("limo_ros_mcp.roscli.Path.is_file", lambda _path: True)
+    client = RosCliReadOnlyClient({"/move_base/global_costmap/costmap": "nav_msgs/OccupancyGrid"})
+
+    with pytest.raises(RuntimeError, match="ROS readiness worker failed"):
+        client.subscribe_many(
+            "/move_base/global_costmap/costmap", "nav_msgs/OccupancyGrid", count=1
+        )

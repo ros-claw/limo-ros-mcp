@@ -10,6 +10,7 @@ CORE_TOOLS = {
     "limo_request_navigation",
     "limo_request_initial_pose",
     "limo_request_tone",
+    "limo_request_speech",
     "limo_get_action_status",
     "limo_get_execution_receipt",
     "limo_emergency_stop",
@@ -19,6 +20,7 @@ CONTROL_TOOLS = {
     "limo_request_navigation",
     "limo_request_initial_pose",
     "limo_request_tone",
+    "limo_request_speech",
     "limo_emergency_stop",
 }
 

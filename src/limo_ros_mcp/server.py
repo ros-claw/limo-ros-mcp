@@ -22,8 +22,11 @@ from limo_ros_mcp.action_specs import (
     initial_pose_display,
     navigation_arguments,
     navigation_display,
+    speech_arguments,
+    speech_display,
     tone_arguments,
     tone_display,
+    validate_speech,
     validate_tone,
 )
 from limo_ros_mcp.cache import ObservationHub
@@ -663,7 +666,7 @@ class LimoMCPService:
                         available.append(observation)
 
             if candidate == "rosbridge" and any(
-                observation in available for observation in ("global_costmap", "tf")
+                observation in available for observation in ("global_costmap", "laser_scan", "tf")
             ):
                 try:
                     supplemental = RosCliReadOnlyClient(
@@ -677,50 +680,58 @@ class LimoMCPService:
                         {
                             "transport": "local_roscli_read_only",
                             "generation": supplemental.transport_generation,
-                            "purpose": "global_costmap_metadata_and_tf_resolution",
+                            "purpose": "costmap_laser_and_tf_readiness_evidence",
                         }
                     )
 
-            # A full 1984x1984 global costmap takes roughly 25 seconds to become
-            # JSON over rosbridge on the LIMO Jetson.  Resolve its fixed --noarr
-            # metadata and the composed TF chain concurrently, then immediately
-            # collect all high-rate rosbridge evidence inside one coherent window.
+            # Fill the fixed TF listener first, then start both fixed Python 2
+            # samplers together. LaserScan remains on the ROS worker because
+            # non-finite no-return ranges are not reliable on rosbridge's JSON
+            # path. The remaining topics use one multiplexed connection below.
             if candidate == "rosbridge" and supplemental is not None:
-                with ThreadPoolExecutor(max_workers=2) as executor:
-                    preflight_futures: dict[Any, str] = {}
-                    if "global_costmap" in available:
-                        available.remove("global_costmap")
-                        preflight_futures[
+                if "tf" in available:
+                    try:
+                        tf_chain_resolved = supplemental.transform_available("map", "base_link")
+                    except Exception as exc:  # noqa: BLE001 - preserve partial evidence
+                        failures["tf_resolution"] = {
+                            "ok": False,
+                            "observation": "tf_resolution",
+                            "error_code": "LIMO_OBSERVATION_FAILED",
+                            "error": str(exc),
+                            "command_dispatched": False,
+                        }
+                slow_observations = [
+                    name for name in ("global_costmap", "laser_scan") if name in available
+                ]
+                for observation in slow_observations:
+                    available.remove(observation)
+                if slow_observations:
+                    with ThreadPoolExecutor(max_workers=len(slow_observations)) as executor:
+                        slow_futures = {
                             executor.submit(
                                 self._observe_with_client,
-                                "global_costmap",
+                                observation,
                                 client=supplemental,
                                 transport="local_roscli_read_only",
                                 include_raw=False,
-                            )
-                        ] = "global_costmap"
-                    if "tf" in available:
-                        preflight_futures[
-                            executor.submit(supplemental.transform_available, "map", "base_link")
-                        ] = "tf_resolution"
-                    for future in as_completed(preflight_futures):
-                        purpose = preflight_futures[future]
-                        try:
-                            result = future.result()
-                        except Exception as exc:  # noqa: BLE001 - preserve partial evidence
-                            failures[purpose] = {
-                                "ok": False,
-                                "observation": purpose,
-                                "error_code": "LIMO_OBSERVATION_FAILED",
-                                "error": str(exc),
-                                "command_dispatched": False,
-                            }
-                            continue
-                        if purpose == "tf_resolution":
-                            tf_chain_resolved = bool(result)
-                        elif isinstance(result.get("summary"), dict):
-                            summaries["global_costmap"] = result["summary"]
-                            records["global_costmap"] = {
+                            ): observation
+                            for observation in slow_observations
+                        }
+                        for future in as_completed(slow_futures):
+                            observation = slow_futures[future]
+                            try:
+                                result = future.result()
+                            except Exception as exc:  # noqa: BLE001 - preserve partial evidence
+                                failures[observation] = {
+                                    "ok": False,
+                                    "observation": observation,
+                                    "error_code": "LIMO_OBSERVATION_FAILED",
+                                    "error": str(exc),
+                                    "command_dispatched": False,
+                                }
+                                continue
+                            summaries[observation] = result["summary"]
+                            records[observation] = {
                                 "summary": result["summary"],
                                 "received_wall_time": result.get("received_wall_time"),
                                 "received_monotonic": result.get("received_monotonic"),
@@ -728,26 +739,95 @@ class LimoMCPService:
                                 "transport_generation": result.get("transport_generation"),
                             }
 
+            subscribe_batch = getattr(client, "subscribe_batch", None)
+            if candidate == "rosbridge" and available and callable(subscribe_batch):
+                batch_names = list(available)
+                available.clear()
+                try:
+                    batch_records = subscribe_batch(
+                        {
+                            LIMO_OBSERVATION_TOPICS[name][0]: LIMO_OBSERVATION_TOPICS[name][1]
+                            for name in batch_names
+                        }
+                    )
+                except Exception as exc:  # noqa: BLE001 - preserve partial evidence
+                    for observation in batch_names:
+                        failures[observation] = {
+                            "ok": False,
+                            "observation": observation,
+                            "error_code": "LIMO_OBSERVATION_FAILED",
+                            "error": str(exc),
+                            "command_dispatched": False,
+                        }
+                else:
+                    for observation in batch_names:
+                        topic, _message_type = LIMO_OBSERVATION_TOPICS[observation]
+                        batch_record = batch_records.get(topic)
+                        message = (
+                            batch_record.get("message") if isinstance(batch_record, dict) else None
+                        )
+                        if not isinstance(message, dict):
+                            failures[observation] = {
+                                "ok": False,
+                                "observation": observation,
+                                "error_code": "LIMO_OBSERVATION_FAILED",
+                                "error": "rosbridge batch omitted the requested topic",
+                                "command_dispatched": False,
+                            }
+                            continue
+                        summary = summarize_observation(observation, message)
+                        if observation == "tf" and tf_chain_resolved is not None:
+                            summary = self._supplement_tf_summary(
+                                summary,
+                                composed_chain_available=tf_chain_resolved,
+                            )
+                        summaries[observation] = summary
+                        records[observation] = {
+                            "summary": summary,
+                            "received_wall_time": batch_record.get("received_wall_time"),
+                            "received_monotonic": batch_record.get("received_monotonic"),
+                            "transport": candidate,
+                            "transport_generation": getattr(client, "transport_generation", None),
+                        }
+                        self._observation_hub.remember(
+                            observation,
+                            transport=candidate,
+                            endpoint=endpoint,
+                            record=records[observation],
+                        )
+
             if available:
                 worker_limit = ROSCLI_MAX_CONCURRENT_OBSERVATIONS if candidate == "roscli" else 12
                 with ThreadPoolExecutor(max_workers=min(worker_limit, len(available))) as executor:
-                    future_names = {
-                        executor.submit(
+                    future_names: dict[Any, str] = {}
+                    for observation in available:
+                        observation_client = (
+                            supplemental
+                            if candidate == "rosbridge"
+                            and observation == "laser_scan"
+                            and supplemental is not None
+                            else client
+                        )
+                        observation_transport = (
+                            "local_roscli_read_only"
+                            if observation_client is supplemental
+                            else candidate
+                        )
+                        future = executor.submit(
                             self._observe_with_client,
                             observation,
-                            client=client,
-                            transport=candidate,
+                            client=observation_client,
+                            transport=observation_transport,
                             include_raw=False,
                             sample_count=(
-                                100
-                                if observation == "tf" and candidate == "rosbridge"
-                                else 5
-                                if observation == "tf"
-                                else 1
+                                # The composed map->base chain is independently
+                                # proven by fixed tf_echo. Five topic messages are
+                                # enough for a bounded edge summary without
+                                # stretching the coherent evidence window.
+                                5 if observation == "tf" else 1
                             ),
-                        ): observation
-                        for observation in available
-                    }
+                        )
+                        future_names[future] = observation
                     for future in as_completed(future_names):
                         observation = future_names[future]
                         try:
@@ -1309,6 +1389,100 @@ class LimoMCPService:
             "approval_request": dict(prepared.approval_request),
             "prepared_action": prepared,
             "tone_contract": validation,
+            "command_dispatched": False,
+            "usable_for_real_execution": False,
+        }
+
+    async def request_speech(
+        self,
+        *,
+        text: str,
+        language: str,
+        volume_percent: int,
+        rate_wpm: int,
+        body_snapshot_hash: str,
+        execution_mode: str,
+        action_id: str | None,
+        wait_timeout_sec: float,
+    ) -> dict[str, Any]:
+        mode = str(execution_mode).upper()
+        if mode not in {"SHADOW", "REAL"}:
+            return self._navigation_block(
+                "INVALID_EXECUTION_MODE", "Only SHADOW or REAL may be submitted to rosclawd."
+            )
+        if isinstance(wait_timeout_sec, bool) or not 0.0 <= float(wait_timeout_sec) <= 30.0:
+            raise ValueError("wait_timeout_sec must be within [0, 30]")
+        validation = validate_speech(
+            text=text,
+            language=language,
+            volume_percent=volume_percent,
+            rate_wpm=rate_wpm,
+            body_snapshot_hash=body_snapshot_hash,
+        )
+        if not validation["ok"]:
+            return validation
+        if mode == "REAL":
+            return self._navigation_block(
+                "MCP_OPERATOR_CONFIRMATION_REQUIRED",
+                "REAL speech playback must use the MCP in-context confirmation flow.",
+            )
+        try:
+            response = await self._gateway.request_speech(
+                capability_id="limo.speak_text",
+                arguments=speech_arguments(validation["normalized_speech"]),
+                execution_mode=mode,
+                body_snapshot_hash=body_snapshot_hash,
+                body_id="limo",
+                action_id=action_id,
+                required_evidence="TASK_VERIFIED",
+                timeout_sec=15.0,
+                wait_timeout_sec=float(wait_timeout_sec),
+            )
+            return {**response, "speech_contract": validation}
+        except Exception as exc:  # noqa: BLE001 - MCP boundary returns structured errors
+            return _control_error("request_speech", exc)
+
+    def prepare_speech_confirmation(
+        self,
+        *,
+        text: str,
+        language: str,
+        volume_percent: int,
+        rate_wpm: int,
+        body_snapshot_hash: str,
+        action_id: str,
+        deadline_at: str,
+    ) -> dict[str, Any]:
+        validation = validate_speech(
+            text=text,
+            language=language,
+            volume_percent=volume_percent,
+            rate_wpm=rate_wpm,
+            body_snapshot_hash=body_snapshot_hash,
+        )
+        if not validation["ok"]:
+            return validation
+        speech = validation["normalized_speech"]
+        try:
+            prepared = self._gateway.prepare_operator_action(
+                capability_id="limo.speak_text",
+                arguments=speech_arguments(speech),
+                body_snapshot_hash=body_snapshot_hash,
+                body_id="limo",
+                action_id=action_id,
+                deadline_at=deadline_at,
+                required_evidence="TASK_VERIFIED",
+                timeout_sec=15.0,
+                display=speech_display(speech),
+            )
+        except Exception as exc:  # noqa: BLE001 - MCP boundary returns structured errors
+            return _control_error("prepare_speech_confirmation", exc)
+        return {
+            "ok": True,
+            "decision": "CONFIRMATION_REQUIRED",
+            "approval_request": dict(prepared.approval_request),
+            "prepared_action": prepared,
+            "speech_contract": validation,
             "command_dispatched": False,
             "usable_for_real_execution": False,
         }
@@ -2040,6 +2214,57 @@ def build_mcp_server(
             frequency_hz=frequency_hz,
             duration_sec=duration_sec,
             volume_percent=volume_percent,
+            body_snapshot_hash=body_snapshot_hash,
+            execution_mode=execution_mode,
+            action_id=action_id,
+            wait_timeout_sec=wait_timeout_sec,
+        )
+
+    @mcp.tool(
+        description=(
+            "Speak one bounded Chinese or English message through the LIMO USB speaker via "
+            "rosclawd. REAL uses in-context confirmation, microphone loopback, and mixer restore."
+        ),
+        annotations=GUARDED_ACTION_TOOL,
+        meta={"physicalExecution": True, "operatorConfirmation": "internal"},
+    )
+    async def limo_request_speech(
+        ctx: Context[Any, Any, Any],
+        text: str,
+        body_snapshot_hash: str,
+        language: Literal["cmn", "en"] = "cmn",
+        volume_percent: int = 18,
+        rate_wpm: int = 160,
+        execution_mode: str = "SHADOW",
+        action_id: str | None = None,
+        deadline_at: str | None = None,
+        wait_timeout_sec: float = 2.0,
+    ) -> dict[str, Any]:
+        if str(execution_mode).upper() == "REAL":
+            exact_action_id = action_id or f"action_limo_speech_{uuid.uuid4().hex}"
+            exact_deadline = deadline_at or (
+                datetime.now(UTC) + timedelta(seconds=120)
+            ).isoformat().replace("+00:00", "Z")
+            proposal = implementation.prepare_speech_confirmation(
+                text=text,
+                language=language,
+                volume_percent=volume_percent,
+                rate_wpm=rate_wpm,
+                body_snapshot_hash=body_snapshot_hash,
+                action_id=exact_action_id,
+                deadline_at=exact_deadline,
+            )
+            return await complete_real_confirmation(
+                ctx,
+                proposal,
+                contract_key="speech_contract",
+                wait_timeout_sec=wait_timeout_sec,
+            )
+        return await implementation.request_speech(
+            text=text,
+            language=language,
+            volume_percent=volume_percent,
+            rate_wpm=rate_wpm,
             body_snapshot_hash=body_snapshot_hash,
             execution_mode=execution_mode,
             action_id=action_id,

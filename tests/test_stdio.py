@@ -28,13 +28,14 @@ async def test_limo_mcp_stdio_initialize_list_and_call() -> None:
                 await session.initialize()
                 listed = await session.list_tools()
                 names = {tool.name for tool in listed.tools}
-                assert len(names) == 10
+                assert len(names) == 11
                 assert "limo_get_context" in names
                 assert "limo_get_readiness" in names
                 assert "limo_observe" in names
                 assert "limo_request_navigation" in names
                 assert "limo_request_initial_pose" in names
                 assert "limo_request_tone" in names
+                assert "limo_request_speech" in names
                 assert not any("publish" in name or "cmd_vel" in name for name in names)
 
                 called = await session.call_tool(
