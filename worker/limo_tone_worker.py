@@ -34,6 +34,9 @@ ALLOWED_USB_CARD_NAMES = ("USB PnP Audio Device", "USB PnP Sound Device")
 BASELINE_CAPTURE_SEC = 1
 LOOPBACK_CAPTURE_SEC = 2
 LOOPBACK_PREROLL_SEC = 0.15
+CAPTURE_BUSY_RETRIES = 3
+CAPTURE_BUSY_RETRY_DELAY_SEC = 0.2
+CAPTURE_START_SETTLE_SEC = 0.05
 LOOPBACK_MIN_TARGET_DBFS = -45.0
 LOOPBACK_MIN_GAIN_DB = 10.0
 LOOPBACK_MIN_PROMINENCE_DB = 8.0
@@ -321,21 +324,42 @@ def _capture_command(card, duration_sec):
     ]
 
 
+def _device_busy(stderr):
+    return "Device or resource busy" in str(stderr)
+
+
 def _capture_pcm(card, duration_sec):
-    code, stdout, stderr = _run(_capture_command(card, duration_sec))
-    if code != 0:
-        raise RequestError("microphone capture failed: %s" % stderr.strip())
-    if not stdout:
-        raise RequestError("microphone capture returned no samples")
-    return stdout
+    for attempt in range(CAPTURE_BUSY_RETRIES):
+        code, stdout, stderr = _run(_capture_command(card, duration_sec))
+        if code == 0:
+            if not stdout:
+                raise RequestError("microphone capture returned no samples")
+            return stdout
+        if not _device_busy(stderr) or attempt + 1 >= CAPTURE_BUSY_RETRIES:
+            raise RequestError("microphone capture failed: %s" % stderr.strip())
+        time.sleep(CAPTURE_BUSY_RETRY_DELAY_SEC)
+    raise RequestError("microphone capture failed after bounded retries")
+
+
+def _start_capture(card, duration_sec):
+    for attempt in range(CAPTURE_BUSY_RETRIES):
+        recorder = subprocess.Popen(
+            _capture_command(card, duration_sec),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        time.sleep(CAPTURE_START_SETTLE_SEC)
+        if recorder.poll() is None:
+            return recorder
+        _stdout, stderr = recorder.communicate()
+        if not _device_busy(stderr) or attempt + 1 >= CAPTURE_BUSY_RETRIES:
+            raise RequestError("microphone loopback capture failed: %s" % stderr.strip())
+        time.sleep(CAPTURE_BUSY_RETRY_DELAY_SEC)
+    raise RequestError("microphone loopback capture failed after bounded retries")
 
 
 def _capture_during_playback(card, wav_bytes):
-    recorder = subprocess.Popen(
-        _capture_command(card, LOOPBACK_CAPTURE_SEC),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
+    recorder = _start_capture(card, LOOPBACK_CAPTURE_SEC)
     try:
         time.sleep(LOOPBACK_PREROLL_SEC)
         playback_backend, device = _play_tone(card, wav_bytes)

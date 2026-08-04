@@ -204,6 +204,37 @@ def test_tone_worker_falls_back_to_fixed_alsa_device(monkeypatch) -> None:
     assert calls == [(["/usr/bin/aplay", "-q", "-D", "plughw:2,0"], b"RIFF-test")]
 
 
+def test_tone_worker_retries_transient_busy_microphone(monkeypatch) -> None:
+    calls = 0
+
+    def fake_run(_command, input_bytes=None, env=None):
+        nonlocal calls
+        del input_bytes, env
+        calls += 1
+        if calls < 3:
+            return 1, b"", b"audio open error: Device or resource busy"
+        return 0, b"pcm", b""
+
+    sleeps: list[float] = []
+    monkeypatch.setattr(TONE, "_run", fake_run)
+    monkeypatch.setattr(TONE.time, "sleep", sleeps.append)
+
+    assert TONE._capture_pcm(2, 1) == b"pcm"
+    assert calls == 3
+    assert sleeps == [TONE.CAPTURE_BUSY_RETRY_DELAY_SEC] * 2
+
+
+def test_tone_worker_does_not_retry_non_busy_microphone_error(monkeypatch) -> None:
+    monkeypatch.setattr(
+        TONE,
+        "_run",
+        lambda *_args, **_kwargs: (1, b"", b"audio open error: no such device"),
+    )
+
+    with pytest.raises(TONE.RequestError, match="no such device"):
+        TONE._capture_pcm(2, 1)
+
+
 def test_tone_worker_rejects_ambiguous_pulseaudio_sinks(monkeypatch) -> None:
     inventory = (
         b"1\talsa_output.usb-0c76_USB_PnP_Audio_Device-00.analog-stereo\tmodule\n"
