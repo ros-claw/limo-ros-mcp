@@ -203,15 +203,28 @@ def _wait_for_stopped_odometry(rospy, odometry_type, timeout_sec):
     raise RequestError("base did not report a stopped odometry state")
 
 
-def _wait_for_post_dispatch_amcl(rospy, state, dispatched_wall_time, timeout_sec):
+def _amcl_is_post_dispatch(message, received_wall_time, dispatched_wall_time, dispatched_ros_sec):
+    if message is None or received_wall_time is None or received_wall_time < dispatched_wall_time:
+        return False
+    try:
+        stamp_sec = float(message.header.stamp.to_sec())
+    except (AttributeError, TypeError, ValueError):
+        return False
+    return stamp_sec >= dispatched_ros_sec
+
+
+def _wait_for_post_dispatch_amcl(
+    rospy, state, dispatched_wall_time, dispatched_ros_sec, timeout_sec
+):
     deadline = time.time() + timeout_sec
     while not rospy.is_shutdown() and time.time() < deadline:
         message = state.get("message")
         received_wall_time = state.get("received_wall_time")
-        if (
-            message is not None
-            and received_wall_time is not None
-            and received_wall_time >= dispatched_wall_time
+        if _amcl_is_post_dispatch(
+            message,
+            received_wall_time,
+            dispatched_wall_time,
+            dispatched_ros_sec,
         ):
             return message
         rospy.sleep(0.02)
@@ -263,10 +276,19 @@ def _run_ros(request):
     odom_pose_before = _pose_from_odometry(odom_before)
     initial_position_error, initial_yaw_error = _pose_error(map_pose_before, pose)
     active_tolerance = _active_goal_tolerance(rospy, request["goal_tolerance"])
+    requested_tolerance = request["goal_tolerance"]
     goal_already_satisfied = (
         initial_position_error <= active_tolerance["xy_m"]
         and initial_yaw_error <= active_tolerance["yaw_rad"]
     )
+    requested_goal_satisfied = (
+        initial_position_error <= requested_tolerance["xy_m"]
+        and initial_yaw_error <= requested_tolerance["yaw_rad"]
+    )
+    if goal_already_satisfied and not requested_goal_satisfied:
+        raise RequestError(
+            "goal is inside active planner tolerance but outside approved verification tolerance"
+        )
     goal = MoveBaseGoal()
     goal.target_pose.header.stamp = rospy.Time.now()
     goal.target_pose.header.frame_id = "map"
@@ -275,6 +297,7 @@ def _run_ros(request):
     goal.target_pose.pose.orientation.z = math.sin(pose["yaw"] / 2.0)
     goal.target_pose.pose.orientation.w = math.cos(pose["yaw"] / 2.0)
     amcl_observed_before_dispatch = amcl_state.get("message") is not None
+    dispatched_ros_sec = rospy.Time.now().to_sec()
     dispatched_wall = time.time()
     server.send_goal(goal)
     finished = server.wait_for_result(rospy.Duration(request["navigation_timeout_sec"]))
@@ -296,6 +319,7 @@ def _run_ros(request):
         rospy,
         amcl_state,
         dispatched_wall,
+        dispatched_ros_sec,
         min(0.5, request["verification_timeout_sec"]),
     )
     map_to_base_after = listener.lookupTransform("map", "base_link", rospy.Time(0))
@@ -351,6 +375,7 @@ def _run_ros(request):
             },
             "active_goal_tolerance": active_tolerance,
             "goal_already_satisfied": goal_already_satisfied,
+            "requested_goal_satisfied": requested_goal_satisfied,
         },
         "observed_final_pose": observed,
         "observed_final_pose_source": observed_source,

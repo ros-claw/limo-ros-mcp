@@ -287,8 +287,15 @@ def test_navigation_worker_rejects_non_map_and_unbounded_timeout() -> None:
 
 
 def test_navigation_worker_waits_for_post_dispatch_amcl(monkeypatch) -> None:
-    before = object()
-    after = object()
+    def message(stamp: float):
+        return type(
+            "Message",
+            (),
+            {"header": type("Header", (), {"stamp": type("Stamp", (), {"to_sec": lambda self: stamp})()})()},
+        )()
+
+    before = message(99.0)
+    after = message(100.1)
     state = {"message": before, "received_wall_time": 9.0}
 
     class FakeRospy:
@@ -307,7 +314,7 @@ def test_navigation_worker_waits_for_post_dispatch_amcl(monkeypatch) -> None:
     monkeypatch.setattr(NAVIGATION.time, "time", lambda: next(clock))
     rospy = FakeRospy()
 
-    observed = NAVIGATION._wait_for_post_dispatch_amcl(rospy, state, 10.0, 1.0)
+    observed = NAVIGATION._wait_for_post_dispatch_amcl(rospy, state, 10.0, 100.0, 1.0)
 
     assert observed is after
     assert rospy.sleeps == 1
@@ -330,9 +337,22 @@ def test_navigation_worker_returns_none_when_post_dispatch_amcl_is_event_silent(
     clock = iter([10.0, 10.0, 10.2])
     monkeypatch.setattr(NAVIGATION.time, "time", lambda: next(clock))
 
-    observed = NAVIGATION._wait_for_post_dispatch_amcl(FakeRospy(), state, 10.0, 0.1)
+    observed = NAVIGATION._wait_for_post_dispatch_amcl(
+        FakeRospy(), state, 10.0, 100.0, 0.1
+    )
 
     assert observed is None
+
+
+def test_navigation_worker_rejects_late_delivery_of_stale_amcl() -> None:
+    class Stamp:
+        @staticmethod
+        def to_sec() -> float:
+            return 99.0
+
+    message = type("Message", (), {"header": type("Header", (), {"stamp": Stamp()})()})()
+
+    assert not NAVIGATION._amcl_is_post_dispatch(message, 10.1, 10.0, 100.0)
 
 
 def test_navigation_worker_builds_map_pose_from_live_tf() -> None:
