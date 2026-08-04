@@ -459,7 +459,7 @@ def test_rosbridge_readiness_uses_noarr_cli_summary_for_global_costmap(
         {
             "transport": "local_roscli_read_only",
             "generation": "roscli-summary",
-            "purpose": "global_costmap_metadata_and_tf_resolution",
+            "purpose": "costmap_laser_and_tf_readiness_evidence",
         },
     ]
 
@@ -517,6 +517,61 @@ def test_rosbridge_readiness_supplements_critical_tf_edges(
         for item in result["summaries"]["tf"]["transforms"]
     }
     assert ("map", "base_link") in edges
+
+
+def test_rosbridge_readiness_collects_laser_through_bounded_roscli(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeRosbridgeClient:
+        transport_generation = "rosbridge-primary"
+
+        def probe(self) -> dict[str, Any]:
+            return {"topics": ["/scan"], "types": ["sensor_msgs/LaserScan"], "nodes": []}
+
+        def subscribe_many(self, *_args: Any, **_kwargs: Any) -> list[dict[str, Any]]:
+            raise AssertionError("readiness must not transfer LaserScan through rosbridge")
+
+    class FakeRoscliClient:
+        transport_generation = "roscli-laser"
+
+        def subscribe_many(
+            self, _topic: str, _message_type: str, *, count: int
+        ) -> list[dict[str, Any]]:
+            assert count == 1
+            return [
+                {
+                    "header": {"stamp": {"secs": 10, "nsecs": 0}, "frame_id": "laser_link"},
+                    "angle_min": -1.0,
+                    "angle_increment": 1.0,
+                    "range_min": 0.1,
+                    "range_max": 12.0,
+                    "ranges": [1.0, 2.0, 3.0],
+                }
+            ]
+
+    rosbridge = FakeRosbridgeClient()
+    roscli = FakeRoscliClient()
+    monkeypatch.setattr(
+        LimoMCPService,
+        "_client",
+        staticmethod(lambda *_args, **_kwargs: rosbridge),
+    )
+    monkeypatch.setattr(
+        "limo_ros_mcp.server.RosCliReadOnlyClient", lambda *_args, **_kwargs: roscli
+    )
+
+    result = LimoMCPService(gateway=object())._collect_summaries(
+        ["laser_scan"],
+        endpoint="ws://127.0.0.1:9090",
+        timeout_sec=5.0,
+        transport="rosbridge",
+    )
+
+    assert result["ok"] is True
+    assert result["summaries"]["laser_scan"]["sample_count"] == 3
+    assert result["observation_records"]["laser_scan"]["transport"] == (
+        "local_roscli_read_only"
+    )
 
 
 def test_roscli_readiness_collection_limits_process_fanout(

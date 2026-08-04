@@ -189,7 +189,9 @@ class RosCliReadOnlyClient:
         allowed = {("map", "odom"), ("odom", "base_link"), ("map", "base_link")}
         if (parent_frame, child_frame) not in allowed:
             raise ValueError("transform is not present in the immutable readiness allowlist")
-        timeout_sec = max(0.2, min(self.timeout_sec, 2.0))
+        # A fresh tf_echo process needs several seconds to fill its listener on
+        # the live Jetson, especially while readiness also samples ROS topics.
+        timeout_sec = max(0.2, min(self.timeout_sec, 5.0))
         command = [
             self.timeout_command,
             "--signal=TERM",

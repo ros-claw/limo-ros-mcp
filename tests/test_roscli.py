@@ -179,6 +179,7 @@ def test_roscli_resolves_only_fixed_readiness_transforms(monkeypatch: Any) -> No
     client = RosCliReadOnlyClient({"/tf": "tf2_msgs/TFMessage"})
 
     assert client.transform_available("map", "odom") is True
+    assert calls[0][2] == "5"
     assert calls[0][-4:] == ["tf", "tf_echo", "map", "odom"]
     try:
         client.transform_available("map", "camera_link")

@@ -666,7 +666,8 @@ class LimoMCPService:
                         available.append(observation)
 
             if candidate == "rosbridge" and any(
-                observation in available for observation in ("global_costmap", "tf")
+                observation in available
+                for observation in ("global_costmap", "laser_scan", "tf")
             ):
                 try:
                     supplemental = RosCliReadOnlyClient(
@@ -680,7 +681,7 @@ class LimoMCPService:
                         {
                             "transport": "local_roscli_read_only",
                             "generation": supplemental.transport_generation,
-                            "purpose": "global_costmap_metadata_and_tf_resolution",
+                            "purpose": "costmap_laser_and_tf_readiness_evidence",
                         }
                     )
 
@@ -689,7 +690,7 @@ class LimoMCPService:
             # metadata and the composed TF chain concurrently, then immediately
             # collect all high-rate rosbridge evidence inside one coherent window.
             if candidate == "rosbridge" and supplemental is not None:
-                with ThreadPoolExecutor(max_workers=2) as executor:
+                with ThreadPoolExecutor(max_workers=3) as executor:
                     preflight_futures: dict[Any, str] = {}
                     if "global_costmap" in available:
                         available.remove("global_costmap")
@@ -702,6 +703,17 @@ class LimoMCPService:
                                 include_raw=False,
                             )
                         ] = "global_costmap"
+                    if "laser_scan" in available:
+                        available.remove("laser_scan")
+                        preflight_futures[
+                            executor.submit(
+                                self._observe_with_client,
+                                "laser_scan",
+                                client=supplemental,
+                                transport="local_roscli_read_only",
+                                include_raw=False,
+                            )
+                        ] = "laser_scan"
                     if "tf" in available:
                         preflight_futures[
                             executor.submit(supplemental.transform_available, "map", "base_link")
@@ -722,8 +734,9 @@ class LimoMCPService:
                         if purpose == "tf_resolution":
                             tf_chain_resolved = bool(result)
                         elif isinstance(result.get("summary"), dict):
-                            summaries["global_costmap"] = result["summary"]
-                            records["global_costmap"] = {
+                            observation = purpose
+                            summaries[observation] = result["summary"]
+                            records[observation] = {
                                 "summary": result["summary"],
                                 "received_wall_time": result.get("received_wall_time"),
                                 "received_monotonic": result.get("received_monotonic"),
