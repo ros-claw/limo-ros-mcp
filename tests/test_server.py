@@ -6,7 +6,7 @@ import json
 import time
 import tomllib
 from pathlib import Path
-from threading import Barrier, Lock
+from threading import Lock
 from types import SimpleNamespace
 from typing import Any
 
@@ -574,7 +574,7 @@ def test_rosbridge_readiness_collects_laser_through_bounded_roscli(
     )
 
 
-def test_rosbridge_readiness_uses_parallel_slow_workers_then_one_batch(
+def test_rosbridge_readiness_uses_costmap_worker_then_one_batch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class FakeRosbridgeClient:
@@ -596,36 +596,37 @@ def test_rosbridge_readiness_uses_parallel_slow_workers_then_one_batch(
 
         def subscribe_batch(self, topic_types: dict[str, str]) -> dict[str, dict[str, Any]]:
             self.batch_calls += 1
-            assert topic_types == {"/limo_status": "limo_base/LimoStatus"}
+            assert topic_types == {
+                "/limo_status": "limo_base/LimoStatus",
+                "/scan": "sensor_msgs/LaserScan",
+            }
             return {
                 "/limo_status": {
                     "message": {"battery_voltage": 12.0, "error_code": 0, "motion_mode": 1},
                     "received_wall_time": time.time(),
                     "received_monotonic": time.monotonic(),
-                }
-            }
-
-    class FakeRoscliClient:
-        transport_generation = "roscli-parallel"
-
-        def __init__(self) -> None:
-            self.slow_workers = Barrier(2, timeout=1.0)
-
-        def subscribe_many(
-            self, topic: str, _message_type: str, *, count: int
-        ) -> list[dict[str, Any]]:
-            assert count == 1
-            self.slow_workers.wait()
-            if topic == "/scan":
-                return [
-                    {
+                },
+                "/scan": {
+                    "message": {
                         "angle_min": -1.0,
                         "angle_increment": 1.0,
                         "range_min": 0.1,
                         "range_max": 12.0,
                         "ranges": [1.0, 2.0, 3.0],
-                    }
-                ]
+                    },
+                    "received_wall_time": time.time(),
+                    "received_monotonic": time.monotonic(),
+                },
+            }
+
+    class FakeRoscliClient:
+        transport_generation = "roscli-parallel"
+
+        def subscribe_many(
+            self, topic: str, _message_type: str, *, count: int
+        ) -> list[dict[str, Any]]:
+            assert count == 1
+            assert topic == "/move_base/global_costmap/costmap"
             return [{"info": {"resolution": 0.05, "width": 20, "height": 20}}]
 
     rosbridge = FakeRosbridgeClient()
