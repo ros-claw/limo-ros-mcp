@@ -752,11 +752,11 @@ class LimoMCPService:
                             transport=observation_transport,
                             include_raw=False,
                             sample_count=(
-                                100
-                                if observation == "tf" and candidate == "rosbridge"
-                                else 5
-                                if observation == "tf"
-                                else 1
+                                # The composed map->base chain is independently
+                                # proven by fixed tf_echo. Five topic messages are
+                                # enough for a bounded edge summary without
+                                # stretching the coherent evidence window.
+                                5 if observation == "tf" else 1
                             ),
                         )
                         future_names[future] = observation

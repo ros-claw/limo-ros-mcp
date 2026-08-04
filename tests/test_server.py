@@ -355,7 +355,7 @@ def test_readiness_collection_reuses_preflighted_transport_and_aggregates_tf(
     assert result["summaries"]["tf"]["transform_count"] == 2
 
 
-def test_rosbridge_readiness_samples_tf_long_enough_for_multiple_publishers(
+def test_rosbridge_readiness_bounds_tf_sampling_window(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class FakeRosbridgeClient:
@@ -371,7 +371,7 @@ def test_rosbridge_readiness_samples_tf_long_enough_for_multiple_publishers(
         def subscribe_many(
             self, _topic: str, _message_type: str, *, count: int
         ) -> list[dict[str, Any]]:
-            assert count == 100
+            assert count == 5
             return [
                 {
                     "transforms": [
