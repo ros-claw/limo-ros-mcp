@@ -574,11 +574,14 @@ def test_rosbridge_readiness_collects_laser_through_bounded_roscli(
     )
 
 
-def test_rosbridge_readiness_collects_laser_with_final_high_rate_window(
+def test_rosbridge_readiness_uses_parallel_slow_workers_then_one_batch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class FakeRosbridgeClient:
         transport_generation = "rosbridge-primary"
+
+        def __init__(self) -> None:
+            self.batch_calls = 0
 
         def probe(self) -> dict[str, Any]:
             return {
@@ -591,27 +594,29 @@ def test_rosbridge_readiness_collects_laser_with_final_high_rate_window(
                 "nodes": [],
             }
 
-        def subscribe_many(
-            self, topic: str, _message_type: str, *, count: int
-        ) -> list[dict[str, Any]]:
-            assert topic == "/limo_status"
-            assert count == 1
-            final_window.wait()
-            return [{"battery_voltage": 12.0, "error_code": 0, "motion_mode": 1}]
+        def subscribe_batch(self, topic_types: dict[str, str]) -> dict[str, dict[str, Any]]:
+            self.batch_calls += 1
+            assert topic_types == {"/limo_status": "limo_base/LimoStatus"}
+            return {
+                "/limo_status": {
+                    "message": {"battery_voltage": 12.0, "error_code": 0, "motion_mode": 1},
+                    "received_wall_time": time.time(),
+                    "received_monotonic": time.monotonic(),
+                }
+            }
 
     class FakeRoscliClient:
         transport_generation = "roscli-parallel"
 
         def __init__(self) -> None:
-            self.global_costmap_completed = False
+            self.slow_workers = Barrier(2, timeout=1.0)
 
         def subscribe_many(
             self, topic: str, _message_type: str, *, count: int
         ) -> list[dict[str, Any]]:
             assert count == 1
+            self.slow_workers.wait()
             if topic == "/scan":
-                assert self.global_costmap_completed is True
-                final_window.wait()
                 return [
                     {
                         "angle_min": -1.0,
@@ -621,15 +626,14 @@ def test_rosbridge_readiness_collects_laser_with_final_high_rate_window(
                         "ranges": [1.0, 2.0, 3.0],
                     }
                 ]
-            self.global_costmap_completed = True
             return [{"info": {"resolution": 0.05, "width": 20, "height": 20}}]
 
-    final_window = Barrier(2, timeout=1.0)
+    rosbridge = FakeRosbridgeClient()
     roscli = FakeRoscliClient()
     monkeypatch.setattr(
         LimoMCPService,
         "_client",
-        staticmethod(lambda *_args, **_kwargs: FakeRosbridgeClient()),
+        staticmethod(lambda *_args, **_kwargs: rosbridge),
     )
     monkeypatch.setattr(
         "limo_ros_mcp.server.RosCliReadOnlyClient", lambda *_args, **_kwargs: roscli
@@ -644,6 +648,7 @@ def test_rosbridge_readiness_collects_laser_with_final_high_rate_window(
 
     assert result["ok"] is True
     assert set(result["summaries"]) == {"global_costmap", "laser_scan", "status"}
+    assert rosbridge.batch_calls == 1
 
 
 def test_roscli_readiness_collection_limits_process_fanout(

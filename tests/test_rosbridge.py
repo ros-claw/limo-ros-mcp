@@ -148,6 +148,40 @@ def test_large_costmap_uses_png_compression_and_decodes_response(monkeypatch: An
     assert [item["op"] for item in connection.sent] == ["subscribe", "unsubscribe"]
 
 
+def test_batch_subscription_collects_topics_on_one_connection(monkeypatch: Any) -> None:
+    connection = FakeConnection(
+        [
+            {"op": "publish", "topic": "/odom", "msg": {"header": {"seq": 1}}},
+            {"op": "status", "level": "info"},
+            {"op": "publish", "topic": "/imu", "msg": {"header": {"seq": 2}}},
+        ]
+    )
+    connections = 0
+
+    def connect(*_args: Any, **_kwargs: Any) -> FakeConnection:
+        nonlocal connections
+        connections += 1
+        return connection
+
+    monkeypatch.setattr("websocket.create_connection", connect)
+    monkeypatch.setattr("socket.create_connection", lambda *_args, **_kwargs: FakeSocket())
+
+    messages = RosbridgeReadOnlyClient("ws://127.0.0.1:9090").subscribe_batch(
+        {"/odom": "nav_msgs/Odometry", "/imu": "sensor_msgs/Imu"}
+    )
+
+    assert connections == 1
+    assert messages["/odom"]["message"]["header"]["seq"] == 1
+    assert messages["/imu"]["message"]["header"]["seq"] == 2
+    assert isinstance(messages["/odom"]["received_monotonic"], float)
+    assert [item["op"] for item in connection.sent] == [
+        "subscribe",
+        "subscribe",
+        "unsubscribe",
+        "unsubscribe",
+    ]
+
+
 def test_topic_info_reads_rosapi_metadata(monkeypatch: Any) -> None:
     connection = FakeConnection(
         [

@@ -294,5 +294,68 @@ class RosbridgeReadOnlyClient:
                 connection.send(json.dumps(unsubscribe, separators=(",", ":")))
         return messages
 
+    def subscribe_batch(self, topic_types: dict[str, str]) -> dict[str, dict[str, Any]]:
+        """Collect one message per bounded contract topic on one websocket."""
+
+        if not topic_types or len(topic_types) > 16:
+            raise ValueError("batch subscriptions must contain between 1 and 16 topics")
+        subscriptions = {
+            topic: f"limo-mcp-{uuid.uuid4()}" for topic in sorted(topic_types)
+        }
+        messages: dict[str, dict[str, Any]] = {}
+        with closing(self._connect()) as connection:
+            for topic, subscription_id in subscriptions.items():
+                request: dict[str, Any] = {
+                    "op": "subscribe",
+                    "id": subscription_id,
+                    "topic": topic,
+                    "type": topic_types[topic],
+                    "queue_length": 1,
+                    "throttle_rate": 0,
+                }
+                if topic in _PNG_COMPRESSED_TOPICS:
+                    request["compression"] = "png"
+                connection.send(json.dumps(request, separators=(",", ":")))
+            deadline = time.monotonic() + self.timeout_sec
+            try:
+                while len(messages) < len(subscriptions):
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0.0:
+                        missing = sorted(set(subscriptions) - set(messages))
+                        raise TimeoutError(
+                            f"rosbridge batch response timed out; missing topics: {missing}"
+                        )
+                    connection.settimeout(remaining)
+                    raw = connection.recv()
+                    if not isinstance(raw, str):
+                        raise RuntimeError("rosbridge returned a non-text websocket frame")
+                    if len(raw.encode("utf-8")) > self.max_message_bytes:
+                        raise RuntimeError("rosbridge message exceeds the configured size limit")
+                    response = json.loads(raw)
+                    if isinstance(response, dict) and response.get("op") == "png":
+                        response = _decode_rosbridge_png(
+                            str(response.get("data", "")),
+                            max_decoded_bytes=self.max_decompressed_message_bytes,
+                        )
+                    if not isinstance(response, dict) or response.get("op") != "publish":
+                        continue
+                    response_topic = response.get("topic")
+                    message = response.get("msg")
+                    if response_topic in subscriptions and isinstance(message, dict):
+                        messages[str(response_topic)] = {
+                            "message": message,
+                            "received_wall_time": time.time(),
+                            "received_monotonic": time.monotonic(),
+                        }
+            finally:
+                for topic, subscription_id in subscriptions.items():
+                    connection.send(
+                        json.dumps(
+                            {"op": "unsubscribe", "id": subscription_id, "topic": topic},
+                            separators=(",", ":"),
+                        )
+                    )
+        return messages
+
     def subscribe_once(self, topic: str, message_type: str) -> dict[str, Any]:
         return self.subscribe_many(topic, message_type, count=1)[0]

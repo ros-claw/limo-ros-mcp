@@ -685,11 +685,10 @@ class LimoMCPService:
                         }
                     )
 
-            # Fill the fixed TF listener first, then collect the global costmap
-            # metadata. Its five-second freshness budget covers the final
-            # window. LaserScan has a tighter two-second budget, so its bounded
-            # Python 2 sampler starts alongside the final high-rate rosbridge
-            # reads below and seals near snapshot closure.
+            # Fill the fixed TF listener first, then start both fixed Python 2
+            # samplers together. The remaining high-rate topics are collected
+            # below through one multiplexed rosbridge connection, so this short
+            # final window does not age the costmap or LaserScan headers.
             if candidate == "rosbridge" and supplemental is not None:
                 if "tf" in available:
                     try:
@@ -702,7 +701,9 @@ class LimoMCPService:
                             "error": str(exc),
                             "command_dispatched": False,
                         }
-                slow_observations = [name for name in ("global_costmap",) if name in available]
+                slow_observations = [
+                    name for name in ("global_costmap", "laser_scan") if name in available
+                ]
                 for observation in slow_observations:
                     available.remove(observation)
                 if slow_observations:
@@ -738,6 +739,67 @@ class LimoMCPService:
                                 "transport": result.get("transport"),
                                 "transport_generation": result.get("transport_generation"),
                             }
+
+            subscribe_batch = getattr(client, "subscribe_batch", None)
+            if candidate == "rosbridge" and available and callable(subscribe_batch):
+                batch_names = list(available)
+                available.clear()
+                try:
+                    batch_records = subscribe_batch(
+                        {
+                            LIMO_OBSERVATION_TOPICS[name][0]: LIMO_OBSERVATION_TOPICS[name][1]
+                            for name in batch_names
+                        }
+                    )
+                except Exception as exc:  # noqa: BLE001 - preserve partial evidence
+                    for observation in batch_names:
+                        failures[observation] = {
+                            "ok": False,
+                            "observation": observation,
+                            "error_code": "LIMO_OBSERVATION_FAILED",
+                            "error": str(exc),
+                            "command_dispatched": False,
+                        }
+                else:
+                    for observation in batch_names:
+                        topic, _message_type = LIMO_OBSERVATION_TOPICS[observation]
+                        batch_record = batch_records.get(topic)
+                        message = (
+                            batch_record.get("message")
+                            if isinstance(batch_record, dict)
+                            else None
+                        )
+                        if not isinstance(message, dict):
+                            failures[observation] = {
+                                "ok": False,
+                                "observation": observation,
+                                "error_code": "LIMO_OBSERVATION_FAILED",
+                                "error": "rosbridge batch omitted the requested topic",
+                                "command_dispatched": False,
+                            }
+                            continue
+                        summary = summarize_observation(observation, message)
+                        if observation == "tf" and tf_chain_resolved is not None:
+                            summary = self._supplement_tf_summary(
+                                summary,
+                                composed_chain_available=tf_chain_resolved,
+                            )
+                        summaries[observation] = summary
+                        records[observation] = {
+                            "summary": summary,
+                            "received_wall_time": batch_record.get("received_wall_time"),
+                            "received_monotonic": batch_record.get("received_monotonic"),
+                            "transport": candidate,
+                            "transport_generation": getattr(
+                                client, "transport_generation", None
+                            ),
+                        }
+                        self._observation_hub.remember(
+                            observation,
+                            transport=candidate,
+                            endpoint=endpoint,
+                            record=records[observation],
+                        )
 
             if available:
                 worker_limit = ROSCLI_MAX_CONCURRENT_OBSERVATIONS if candidate == "roscli" else 12
