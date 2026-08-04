@@ -39,7 +39,7 @@ navigation validation, three guarded requests, status, receipt, and emergency st
 | Contract and ROS graph | `limo_get_contract`, `limo_list_observations`, `limo_probe_ros`, `limo_get_topic_info` |
 | Message inspection | `limo_observe`, `limo_sample_topic` |
 | Inspection snapshots | `limo_get_base_state`, `limo_get_laser_summary`, `limo_get_localization_state`, `limo_get_navigation_state`, `limo_get_map_summary`, `limo_get_diagnostics`, `limo_get_transform_state`, `limo_get_patrol_readiness` |
-| Camera and peripherals | `limo_get_camera_state`, `limo_get_dabai_device_state`, `limo_list_peripherals`, `limo_get_audio_state`, `limo_measure_microphone`, `limo_get_display_state`, `limo_get_platform_health` |
+| Camera and peripherals | `limo_get_camera_state`, `limo_capture_camera_frame`, `limo_get_dabai_device_state`, `limo_list_peripherals`, `limo_get_audio_state`, `limo_measure_microphone`, `limo_get_display_state`, `limo_get_platform_health` |
 | Validation | `limo_validate_navigation_goal`, `limo_validate_velocity_command` |
 | ROSClaw control plane | `limo_get_runtime_status`, `limo_request_navigation`, `limo_request_initial_pose`, `limo_request_tone`, `limo_request_speech`, `limo_get_action_status`, `limo_get_execution_receipt`, `limo_emergency_stop` |
 
