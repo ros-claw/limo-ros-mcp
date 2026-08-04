@@ -685,54 +685,48 @@ class LimoMCPService:
                         }
                     )
 
-            # A full 1984x1984 global costmap takes roughly 25 seconds to become
-            # JSON over rosbridge on the LIMO Jetson. Resolve its fixed --noarr
-            # metadata and the composed TF chain concurrently, then collect the
-            # laser together with the high-rate rosbridge evidence so it is not
-            # stale by the time the TF listener has filled.
+            # Fill the fixed TF listener first, then collect LaserScan. A full
+            # costmap is summarized with --noarr alongside the final high-rate
+            # rosbridge window. This ordering keeps every freshness-critical
+            # observation near the snapshot cutoff on the live Jetson.
             if candidate == "rosbridge" and supplemental is not None:
-                with ThreadPoolExecutor(max_workers=2) as executor:
-                    preflight_futures: dict[Any, str] = {}
-                    if "global_costmap" in available:
-                        available.remove("global_costmap")
-                        preflight_futures[
-                            executor.submit(
-                                self._observe_with_client,
-                                "global_costmap",
-                                client=supplemental,
-                                transport="local_roscli_read_only",
-                                include_raw=False,
-                            )
-                        ] = "global_costmap"
-                    if "tf" in available:
-                        preflight_futures[
-                            executor.submit(supplemental.transform_available, "map", "base_link")
-                        ] = "tf_resolution"
-                    for future in as_completed(preflight_futures):
-                        purpose = preflight_futures[future]
-                        try:
-                            result = future.result()
-                        except Exception as exc:  # noqa: BLE001 - preserve partial evidence
-                            failures[purpose] = {
-                                "ok": False,
-                                "observation": purpose,
-                                "error_code": "LIMO_OBSERVATION_FAILED",
-                                "error": str(exc),
-                                "command_dispatched": False,
-                            }
-                            continue
-                        if purpose == "tf_resolution":
-                            tf_chain_resolved = bool(result)
-                        elif isinstance(result.get("summary"), dict):
-                            observation = purpose
-                            summaries[observation] = result["summary"]
-                            records[observation] = {
-                                "summary": result["summary"],
-                                "received_wall_time": result.get("received_wall_time"),
-                                "received_monotonic": result.get("received_monotonic"),
-                                "transport": result.get("transport"),
-                                "transport_generation": result.get("transport_generation"),
-                            }
+                if "tf" in available:
+                    try:
+                        tf_chain_resolved = supplemental.transform_available("map", "base_link")
+                    except Exception as exc:  # noqa: BLE001 - preserve partial evidence
+                        failures["tf_resolution"] = {
+                            "ok": False,
+                            "observation": "tf_resolution",
+                            "error_code": "LIMO_OBSERVATION_FAILED",
+                            "error": str(exc),
+                            "command_dispatched": False,
+                        }
+                if "laser_scan" in available:
+                    available.remove("laser_scan")
+                    try:
+                        laser_result = self._observe_with_client(
+                            "laser_scan",
+                            client=supplemental,
+                            transport="local_roscli_read_only",
+                            include_raw=False,
+                        )
+                    except Exception as exc:  # noqa: BLE001 - preserve partial evidence
+                        failures["laser_scan"] = {
+                            "ok": False,
+                            "observation": "laser_scan",
+                            "error_code": "LIMO_OBSERVATION_FAILED",
+                            "error": str(exc),
+                            "command_dispatched": False,
+                        }
+                    else:
+                        summaries["laser_scan"] = laser_result["summary"]
+                        records["laser_scan"] = {
+                            "summary": laser_result["summary"],
+                            "received_wall_time": laser_result.get("received_wall_time"),
+                            "received_monotonic": laser_result.get("received_monotonic"),
+                            "transport": laser_result.get("transport"),
+                            "transport_generation": laser_result.get("transport_generation"),
+                        }
 
             if available:
                 worker_limit = ROSCLI_MAX_CONCURRENT_OBSERVATIONS if candidate == "roscli" else 12
@@ -742,7 +736,7 @@ class LimoMCPService:
                         observation_client = (
                             supplemental
                             if candidate == "rosbridge"
-                            and observation == "laser_scan"
+                            and observation == "global_costmap"
                             and supplemental is not None
                             else client
                         )
