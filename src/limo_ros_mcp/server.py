@@ -685,10 +685,10 @@ class LimoMCPService:
                         }
                     )
 
-            # Fill the fixed TF listener first, then collect LaserScan. A full
-            # costmap is summarized with --noarr alongside the final high-rate
-            # rosbridge window. This ordering keeps every freshness-critical
-            # observation near the snapshot cutoff on the live Jetson.
+            # Fill the fixed TF listener first, then collect the slow no-array
+            # global costmap summary, then LaserScan, and only then open the
+            # final high-rate rosbridge window. Each step gets a current ROS
+            # header without letting a slow source delay snapshot closure.
             if candidate == "rosbridge" and supplemental is not None:
                 if "tf" in available:
                     try:
@@ -700,6 +700,32 @@ class LimoMCPService:
                             "error_code": "LIMO_OBSERVATION_FAILED",
                             "error": str(exc),
                             "command_dispatched": False,
+                        }
+                if "global_costmap" in available:
+                    available.remove("global_costmap")
+                    try:
+                        costmap_result = self._observe_with_client(
+                            "global_costmap",
+                            client=supplemental,
+                            transport="local_roscli_read_only",
+                            include_raw=False,
+                        )
+                    except Exception as exc:  # noqa: BLE001 - preserve partial evidence
+                        failures["global_costmap"] = {
+                            "ok": False,
+                            "observation": "global_costmap",
+                            "error_code": "LIMO_OBSERVATION_FAILED",
+                            "error": str(exc),
+                            "command_dispatched": False,
+                        }
+                    else:
+                        summaries["global_costmap"] = costmap_result["summary"]
+                        records["global_costmap"] = {
+                            "summary": costmap_result["summary"],
+                            "received_wall_time": costmap_result.get("received_wall_time"),
+                            "received_monotonic": costmap_result.get("received_monotonic"),
+                            "transport": costmap_result.get("transport"),
+                            "transport_generation": costmap_result.get("transport_generation"),
                         }
                 if "laser_scan" in available:
                     available.remove("laser_scan")
@@ -733,23 +759,11 @@ class LimoMCPService:
                 with ThreadPoolExecutor(max_workers=min(worker_limit, len(available))) as executor:
                     future_names: dict[Any, str] = {}
                     for observation in available:
-                        observation_client = (
-                            supplemental
-                            if candidate == "rosbridge"
-                            and observation == "global_costmap"
-                            and supplemental is not None
-                            else client
-                        )
-                        observation_transport = (
-                            "local_roscli_read_only"
-                            if observation_client is supplemental
-                            else candidate
-                        )
                         future = executor.submit(
                             self._observe_with_client,
                             observation,
-                            client=observation_client,
-                            transport=observation_transport,
+                            client=client,
+                            transport=candidate,
                             include_raw=False,
                             sample_count=(
                                 # The composed map->base chain is independently
