@@ -27,7 +27,7 @@ def test_mcp_process_status_exposes_bounded_restart_evidence() -> None:
 
     assert result["schema_version"] == "limo.mcp-process.v1"
     assert result["server_name"] == "rosclaw-limo"
-    assert result["package_version"] == "0.8.9"
+    assert result["package_version"] == "0.9.0"
     assert isinstance(result["distribution_version"], str)
     assert isinstance(result["installation_metadata_matches_source"], bool)
     assert isinstance(result["pid"], int)
@@ -73,7 +73,7 @@ def test_package_and_manifest_versions_match() -> None:
     project = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
 
     assert manifest["version"] == project["project"]["version"]
-    assert manifest["mcp_tool_count"] == 32
+    assert manifest["mcp_tool_count"] == 33
 
 
 def test_dabai_camera_contract_uses_live_astra_topics() -> None:
@@ -134,6 +134,7 @@ async def test_server_exposes_no_raw_ros_publish_tool() -> None:
         "limo_request_navigation",
         "limo_request_initial_pose",
         "limo_request_tone",
+        "limo_request_speech",
         "limo_sample_topic",
         "limo_emergency_stop",
         "limo_validate_navigation_goal",
@@ -182,7 +183,7 @@ async def test_core_and_inspection_profiles_bound_tool_discovery() -> None:
     core_names = {tool.name for tool in core}
     inspection_names = {tool.name for tool in inspection}
     compat_names = {tool.name for tool in compat}
-    assert len(core_names) == 10
+    assert len(core_names) == 11
     assert "limo_get_context" in core_names
     assert "limo_get_readiness" in core_names
     assert "limo_get_patrol_readiness" not in core_names
@@ -610,6 +611,9 @@ class FakeGateway:
     async def request_tone(self, **kwargs: Any) -> dict[str, Any]:
         return await self.request_navigation(**kwargs)
 
+    async def request_speech(self, **kwargs: Any) -> dict[str, Any]:
+        return await self.request_navigation(**kwargs)
+
     def prepare_operator_action(self, **kwargs: Any) -> Any:
         self.calls.append({"operation": "prepare", **kwargs})
         return SimpleNamespace(
@@ -1031,6 +1035,59 @@ async def test_tone_shadow_and_real_confirmation_contracts() -> None:
     assert "permit" not in str(result).lower()
     assert [call["operation"] for call in gateway.calls] == ["prepare", "confirm"]
     assert gateway.calls[0]["capability_id"] == "limo.play_tone"
+
+
+@pytest.mark.asyncio
+async def test_speech_shadow_and_real_confirmation_contracts() -> None:
+    gateway = FakeGateway()
+    service = LimoMCPService(gateway=gateway, goal_validator=FakeGoalValidator())
+    shadow = await service.request_speech(
+        text="你好，我是 LIMO 巡检机器人。",
+        language="cmn",
+        volume_percent=18,
+        rate_wpm=160,
+        body_snapshot_hash="sha256:test-body-snapshot",
+        execution_mode="SHADOW",
+        action_id="action-speech-shadow",
+        wait_timeout_sec=0.0,
+    )
+    assert shadow["state"] == "QUEUED"
+    assert gateway.calls[0]["capability_id"] == "limo.speak_text"
+    assert gateway.calls[0]["arguments"]["expected_effect"] == {
+        "kind": "speaker_speech",
+        "playback_required": True,
+        "mixer_restore_required": True,
+        "microphone_loopback_required": True,
+        "content_recognition_required": False,
+    }
+
+    gateway.calls.clear()
+    server = build_mcp_server(service)
+    tools = {tool.name: tool for tool in await server.list_tools()}
+    schema = tools["limo_request_speech"].inputSchema
+    assert "approval_id" not in schema["properties"]
+    assert schema["properties"]["language"]["default"] == "cmn"
+    result = await server._tool_manager.call_tool(
+        "limo_request_speech",
+        {
+            "text": "你好，我是 LIMO 巡检机器人。",
+            "body_snapshot_hash": "sha256:test-body-snapshot",
+            "language": "cmn",
+            "volume_percent": 18,
+            "rate_wpm": 160,
+            "execution_mode": "REAL",
+            "action_id": "action-speech-real",
+            "deadline_at": "2030-01-02T03:04:05Z",
+            "wait_timeout_sec": 0.0,
+        },
+        context=FakeElicitationContext(accepted=True),
+        convert_result=False,
+    )
+
+    assert result["state"] == "QUEUED"
+    assert result["interaction"]["decision"] == "CONFIRMED"
+    assert [call["operation"] for call in gateway.calls] == ["prepare", "confirm"]
+    assert gateway.calls[0]["capability_id"] == "limo.speak_text"
 
 
 @pytest.mark.asyncio

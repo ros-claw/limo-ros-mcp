@@ -29,6 +29,8 @@ def _load(name: str) -> ModuleType:
 
 TONE = _load("limo_tone_worker.py")
 NAVIGATION = _load("limo_navigation_worker.py")
+sys.modules["limo_tone_worker"] = TONE
+SPEECH = _load("limo_speech_worker.py")
 
 
 def _tone_request() -> dict[str, object]:
@@ -76,9 +78,24 @@ def _navigation_request() -> dict[str, object]:
     }
 
 
+def _speech_request() -> dict[str, object]:
+    return {
+        "protocol": "rosclaw.limo.worker.v1",
+        "operation": "SPEAK_TEXT",
+        "schema_version": "limo.speech.v1",
+        "action_id": "action-speech-test",
+        "body_id": "limo",
+        "body_snapshot_hash": "sha256:test-body",
+        "text": "你好，我是 LIMO 巡检机器人。",
+        "language": "cmn",
+        "volume_percent": 18,
+        "rate_wpm": 160,
+    }
+
+
 @pytest.mark.parametrize(
     ("module", "payload"),
-    [(TONE, _tone_request()), (NAVIGATION, _navigation_request())],
+    [(TONE, _tone_request()), (NAVIGATION, _navigation_request()), (SPEECH, _speech_request())],
 )
 def test_worker_contract_accepts_exact_bounded_request(
     module: ModuleType, payload: dict[str, object]
@@ -91,7 +108,7 @@ def test_worker_contract_accepts_exact_bounded_request(
 
 @pytest.mark.parametrize(
     ("module", "payload"),
-    [(TONE, _tone_request()), (NAVIGATION, _navigation_request())],
+    [(TONE, _tone_request()), (NAVIGATION, _navigation_request()), (SPEECH, _speech_request())],
 )
 def test_worker_contract_rejects_unknown_surface(
     module: ModuleType, payload: dict[str, object]
@@ -275,6 +292,37 @@ def test_tone_loopback_rejects_unrelated_loud_audio() -> None:
     assert evidence["detected"] is False
 
 
+def test_speech_worker_rejects_controls_and_unbounded_text() -> None:
+    control = {**_speech_request(), "text": "hello\nworld"}
+    too_long = {**_speech_request(), "text": "巡" * 81}
+
+    with pytest.raises(SPEECH.RequestError, match="control"):
+        SPEECH.validate_request(control)
+    with pytest.raises(SPEECH.RequestError, match="text length"):
+        SPEECH.validate_request(too_long)
+
+
+def test_speech_worker_normalizes_pcm_to_requested_peak() -> None:
+    raw = struct.pack("<4h", -1000, 0, 500, 1000)
+
+    normalized, frame_count, peak_scale = SPEECH._normalize_pcm(raw, 18)
+    values = struct.unpack("<4h", normalized)
+
+    assert frame_count == 4
+    assert peak_scale == pytest.approx(0.162, abs=0.0001)
+    assert max(abs(value) for value in values) == pytest.approx(32767 * 0.162, abs=2)
+
+
+def test_speech_loopback_requires_rms_gain() -> None:
+    quiet = struct.pack("<16000h", *([20] * 16000))
+    audible = struct.pack("<32000h", *([4000, -4000] * 16000))
+
+    evidence = SPEECH._speech_loopback(quiet, audible, 2)
+
+    assert evidence["detected"] is True
+    assert evidence["content_recognition_performed"] is False
+
+
 def test_navigation_worker_rejects_non_map_and_unbounded_timeout() -> None:
     wrong_frame = _navigation_request()
     wrong_frame["target_pose"] = {"frame_id": "odom", "x": 0.0, "y": 0.0, "yaw": 0.0}
@@ -398,6 +446,7 @@ def test_navigation_worker_reads_active_trajectory_planner_tolerance() -> None:
     [
         ("limo_tone_worker.py", _tone_request()),
         ("limo_navigation_worker.py", _navigation_request()),
+        ("limo_speech_worker.py", _speech_request()),
     ],
 )
 def test_worker_validate_only_subprocess(worker: str, payload: dict[str, object]) -> None:

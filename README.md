@@ -41,7 +41,7 @@ navigation validation, three guarded requests, status, receipt, and emergency st
 | Inspection snapshots | `limo_get_base_state`, `limo_get_laser_summary`, `limo_get_localization_state`, `limo_get_navigation_state`, `limo_get_map_summary`, `limo_get_diagnostics`, `limo_get_transform_state`, `limo_get_patrol_readiness` |
 | Camera and peripherals | `limo_get_camera_state`, `limo_get_dabai_device_state`, `limo_list_peripherals`, `limo_get_audio_state`, `limo_measure_microphone`, `limo_get_display_state`, `limo_get_platform_health` |
 | Validation | `limo_validate_navigation_goal`, `limo_validate_velocity_command` |
-| ROSClaw control plane | `limo_get_runtime_status`, `limo_request_navigation`, `limo_request_initial_pose`, `limo_request_tone`, `limo_get_action_status`, `limo_get_execution_receipt`, `limo_emergency_stop` |
+| ROSClaw control plane | `limo_get_runtime_status`, `limo_request_navigation`, `limo_request_initial_pose`, `limo_request_tone`, `limo_request_speech`, `limo_get_action_status`, `limo_get_execution_receipt`, `limo_emergency_stop` |
 
 ## Installation
 
@@ -138,6 +138,13 @@ selects the single detected USB PnP audio card, restores the previous mixer stat
 driver-confirmed playback evidence. It does not accept files, commands, mixer names, or devices.
 The upstream driver still exposes no front-OLED or chassis-RGB-light API, and no independent
 amplifier power, temperature, or fault interface was detected.
+
+Version 0.9.0 adds `limo_request_speech` for bounded Mandarin or English messages of at most
+80 characters. A fixed daemon worker calls the locally installed eSpeak-NG library without a
+shell, normalizes the in-memory PCM to 10–25% volume, plays only through the allowlisted USB
+speaker, verifies an acoustic RMS increase with the onboard microphone, discards captured PCM,
+and restores the prior mixer state. The loopback proves acoustic output, not linguistic content;
+no speech recognition is claimed.
 
 ## Provenance
 

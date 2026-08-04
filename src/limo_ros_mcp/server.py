@@ -22,8 +22,11 @@ from limo_ros_mcp.action_specs import (
     initial_pose_display,
     navigation_arguments,
     navigation_display,
+    speech_arguments,
+    speech_display,
     tone_arguments,
     tone_display,
+    validate_speech,
     validate_tone,
 )
 from limo_ros_mcp.cache import ObservationHub
@@ -1313,6 +1316,100 @@ class LimoMCPService:
             "usable_for_real_execution": False,
         }
 
+    async def request_speech(
+        self,
+        *,
+        text: str,
+        language: str,
+        volume_percent: int,
+        rate_wpm: int,
+        body_snapshot_hash: str,
+        execution_mode: str,
+        action_id: str | None,
+        wait_timeout_sec: float,
+    ) -> dict[str, Any]:
+        mode = str(execution_mode).upper()
+        if mode not in {"SHADOW", "REAL"}:
+            return self._navigation_block(
+                "INVALID_EXECUTION_MODE", "Only SHADOW or REAL may be submitted to rosclawd."
+            )
+        if isinstance(wait_timeout_sec, bool) or not 0.0 <= float(wait_timeout_sec) <= 30.0:
+            raise ValueError("wait_timeout_sec must be within [0, 30]")
+        validation = validate_speech(
+            text=text,
+            language=language,
+            volume_percent=volume_percent,
+            rate_wpm=rate_wpm,
+            body_snapshot_hash=body_snapshot_hash,
+        )
+        if not validation["ok"]:
+            return validation
+        if mode == "REAL":
+            return self._navigation_block(
+                "MCP_OPERATOR_CONFIRMATION_REQUIRED",
+                "REAL speech playback must use the MCP in-context confirmation flow.",
+            )
+        try:
+            response = await self._gateway.request_speech(
+                capability_id="limo.speak_text",
+                arguments=speech_arguments(validation["normalized_speech"]),
+                execution_mode=mode,
+                body_snapshot_hash=body_snapshot_hash,
+                body_id="limo",
+                action_id=action_id,
+                required_evidence="TASK_VERIFIED",
+                timeout_sec=15.0,
+                wait_timeout_sec=float(wait_timeout_sec),
+            )
+            return {**response, "speech_contract": validation}
+        except Exception as exc:  # noqa: BLE001 - MCP boundary returns structured errors
+            return _control_error("request_speech", exc)
+
+    def prepare_speech_confirmation(
+        self,
+        *,
+        text: str,
+        language: str,
+        volume_percent: int,
+        rate_wpm: int,
+        body_snapshot_hash: str,
+        action_id: str,
+        deadline_at: str,
+    ) -> dict[str, Any]:
+        validation = validate_speech(
+            text=text,
+            language=language,
+            volume_percent=volume_percent,
+            rate_wpm=rate_wpm,
+            body_snapshot_hash=body_snapshot_hash,
+        )
+        if not validation["ok"]:
+            return validation
+        speech = validation["normalized_speech"]
+        try:
+            prepared = self._gateway.prepare_operator_action(
+                capability_id="limo.speak_text",
+                arguments=speech_arguments(speech),
+                body_snapshot_hash=body_snapshot_hash,
+                body_id="limo",
+                action_id=action_id,
+                deadline_at=deadline_at,
+                required_evidence="TASK_VERIFIED",
+                timeout_sec=15.0,
+                display=speech_display(speech),
+            )
+        except Exception as exc:  # noqa: BLE001 - MCP boundary returns structured errors
+            return _control_error("prepare_speech_confirmation", exc)
+        return {
+            "ok": True,
+            "decision": "CONFIRMATION_REQUIRED",
+            "approval_request": dict(prepared.approval_request),
+            "prepared_action": prepared,
+            "speech_contract": validation,
+            "command_dispatched": False,
+            "usable_for_real_execution": False,
+        }
+
     async def request_initial_pose(
         self,
         *,
@@ -2040,6 +2137,57 @@ def build_mcp_server(
             frequency_hz=frequency_hz,
             duration_sec=duration_sec,
             volume_percent=volume_percent,
+            body_snapshot_hash=body_snapshot_hash,
+            execution_mode=execution_mode,
+            action_id=action_id,
+            wait_timeout_sec=wait_timeout_sec,
+        )
+
+    @mcp.tool(
+        description=(
+            "Speak one bounded Chinese or English message through the LIMO USB speaker via "
+            "rosclawd. REAL uses in-context confirmation, microphone loopback, and mixer restore."
+        ),
+        annotations=GUARDED_ACTION_TOOL,
+        meta={"physicalExecution": True, "operatorConfirmation": "internal"},
+    )
+    async def limo_request_speech(
+        ctx: Context[Any, Any, Any],
+        text: str,
+        body_snapshot_hash: str,
+        language: Literal["cmn", "en"] = "cmn",
+        volume_percent: int = 18,
+        rate_wpm: int = 160,
+        execution_mode: str = "SHADOW",
+        action_id: str | None = None,
+        deadline_at: str | None = None,
+        wait_timeout_sec: float = 2.0,
+    ) -> dict[str, Any]:
+        if str(execution_mode).upper() == "REAL":
+            exact_action_id = action_id or f"action_limo_speech_{uuid.uuid4().hex}"
+            exact_deadline = deadline_at or (
+                datetime.now(UTC) + timedelta(seconds=120)
+            ).isoformat().replace("+00:00", "Z")
+            proposal = implementation.prepare_speech_confirmation(
+                text=text,
+                language=language,
+                volume_percent=volume_percent,
+                rate_wpm=rate_wpm,
+                body_snapshot_hash=body_snapshot_hash,
+                action_id=exact_action_id,
+                deadline_at=exact_deadline,
+            )
+            return await complete_real_confirmation(
+                ctx,
+                proposal,
+                contract_key="speech_contract",
+                wait_timeout_sec=wait_timeout_sec,
+            )
+        return await implementation.request_speech(
+            text=text,
+            language=language,
+            volume_percent=volume_percent,
+            rate_wpm=rate_wpm,
             body_snapshot_hash=body_snapshot_hash,
             execution_mode=execution_mode,
             action_id=action_id,

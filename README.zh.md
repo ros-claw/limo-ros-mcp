@@ -36,7 +36,7 @@ USB、音频、显示、触摸屏、相机健康与 Jetson 证据边界详见
 | 巡检快照 | `limo_get_base_state`、`limo_get_laser_summary`、`limo_get_localization_state`、`limo_get_navigation_state`、`limo_get_map_summary`、`limo_get_diagnostics`、`limo_get_transform_state`、`limo_get_patrol_readiness` |
 | 相机与外设 | `limo_get_camera_state`、`limo_get_dabai_device_state`、`limo_list_peripherals`、`limo_get_audio_state`、`limo_measure_microphone`、`limo_get_display_state`、`limo_get_platform_health` |
 | 参数验证 | `limo_validate_navigation_goal`、`limo_validate_velocity_command` |
-| ROSClaw 控制面 | `limo_get_runtime_status`、`limo_request_navigation`、`limo_request_initial_pose`、`limo_request_tone`、`limo_get_action_status`、`limo_get_execution_receipt`、`limo_emergency_stop` |
+| ROSClaw 控制面 | `limo_get_runtime_status`、`limo_request_navigation`、`limo_request_initial_pose`、`limo_request_tone`、`limo_request_speech`、`limo_get_action_status`、`limo_get_execution_receipt`、`limo_emergency_stop` |
 
 ## 安装与 Codex 接入
 
@@ -111,6 +111,11 @@ roslaunch rosbridge_server rosbridge_websocket.launch port:=9090
 只选择唯一的 USB PnP 声卡，播放后恢复原混音状态，不接收文件、命令、混音器名称或
 设备参数。上游驱动仍没有提供前置 OLED 或车身 RGB 灯接口，真机也没有枚举出独立功放
 的电源、温度或故障接口。
+
+0.9.0 新增 `limo_request_speech`，支持最长 80 字符的普通话或英语短句。固定的 daemon
+worker 不经过 shell，直接调用本机 eSpeak-NG 库，在内存中把 PCM 归一化到 10–25% 音量，
+仅通过白名单 USB 扬声器播放，用车载麦克风验证声能增益，立即丢弃采样并恢复原混音状态。
+该闭环证明声学输出，不声称识别或验证了具体语义内容。
 
 ## 上游来源
 
