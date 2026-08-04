@@ -240,7 +240,7 @@ def _level_metrics(pcm):
     }
 
 
-def _speech_loopback(baseline_pcm, observed_pcm, card):
+def _speech_loopback(baseline_pcm, observed_pcm, capture_device):
     baseline = _level_metrics(baseline_pcm)
     observed = _level_metrics(observed_pcm)
     gain = round(observed["rms_dbfs"] - baseline["rms_dbfs"], 2)
@@ -248,7 +248,7 @@ def _speech_loopback(baseline_pcm, observed_pcm, card):
     return {
         "detected": detected,
         "sensor": "onboard_usb_microphone",
-        "capture_device": "plughw:%d,0" % card,
+        "capture_device": capture_device,
         "rms_gain_db": gain,
         "thresholds": {
             "minimum_rms_dbfs": LOOPBACK_MIN_RMS_DBFS,
@@ -265,21 +265,21 @@ def _speech_loopback(baseline_pcm, observed_pcm, card):
 
 def _run_speech(request):
     card = audio._usb_audio_card()
-    baseline_pcm = audio._capture_pcm(card, audio.BASELINE_CAPTURE_SEC)
+    server = audio._pulse_server()
+    baseline_pcm, capture_device = audio._capture_pcm(card, audio.BASELINE_CAPTURE_SEC, server)
     sample_rate, raw_pcm = _synthesize(request["text"], request["language"], request["rate_wpm"])
     pcm, frame_count, digital_peak_scale = _normalize_pcm(raw_pcm, request["volume_percent"])
     speech_wav = _wav_bytes(sample_rate, pcm)
     started = time.time()
     restored = False
-    server = audio._pulse_server()
     if server is not None:
         sink = audio._pulse_sink(server)
         original_state = audio._pulse_sink_state(server, sink)
         reference_volumes = [audio.PULSE_REFERENCE_VOLUME] * len(original_state["channel_volumes"])
         try:
             audio._set_pulse_sink_state(server, sink, reference_volumes, True)
-            playback_backend, device, observed_pcm = audio._capture_during_playback(
-                card, speech_wav
+            playback_backend, device, observed_capture_device, observed_pcm = (
+                audio._capture_during_playback(card, speech_wav, server)
             )
         finally:
             audio._set_pulse_sink_state(
@@ -298,8 +298,8 @@ def _run_speech(request):
         original_percent, original_unmuted = audio._speaker_state(card)
         try:
             audio._set_speaker_state(card, 100, True, mapped=True)
-            playback_backend, device, observed_pcm = audio._capture_during_playback(
-                card, speech_wav
+            playback_backend, device, observed_capture_device, observed_pcm = (
+                audio._capture_during_playback(card, speech_wav)
             )
         finally:
             audio._set_speaker_state(card, original_percent, original_unmuted)
@@ -309,7 +309,9 @@ def _run_speech(request):
             "volume_percent": original_percent,
             "unmuted": original_unmuted,
         }
-    loopback = _speech_loopback(baseline_pcm, observed_pcm, card)
+    if observed_capture_device != capture_device:
+        raise RequestError("microphone capture device changed during loopback")
+    loopback = _speech_loopback(baseline_pcm, observed_pcm, capture_device)
     text_utf8 = request["text"].encode("utf-8")
     return {
         "protocol": PROTOCOL,
