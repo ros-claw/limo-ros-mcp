@@ -6,7 +6,7 @@ import json
 import time
 import tomllib
 from pathlib import Path
-from threading import Lock
+from threading import Barrier, Lock
 from types import SimpleNamespace
 from typing import Any
 
@@ -572,6 +572,63 @@ def test_rosbridge_readiness_collects_laser_through_bounded_roscli(
     assert result["observation_records"]["laser_scan"]["transport"] == (
         "local_roscli_read_only"
     )
+
+
+def test_rosbridge_readiness_starts_slow_fixed_samplers_together(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeRosbridgeClient:
+        transport_generation = "rosbridge-primary"
+
+        def probe(self) -> dict[str, Any]:
+            return {
+                "topics": ["/move_base/global_costmap/costmap", "/scan"],
+                "types": ["nav_msgs/OccupancyGrid", "sensor_msgs/LaserScan"],
+                "nodes": [],
+            }
+
+    class FakeRoscliClient:
+        transport_generation = "roscli-parallel"
+
+        def __init__(self) -> None:
+            self.barrier = Barrier(2, timeout=1.0)
+
+        def subscribe_many(
+            self, topic: str, _message_type: str, *, count: int
+        ) -> list[dict[str, Any]]:
+            assert count == 1
+            self.barrier.wait()
+            if topic == "/scan":
+                return [
+                    {
+                        "angle_min": -1.0,
+                        "angle_increment": 1.0,
+                        "range_min": 0.1,
+                        "range_max": 12.0,
+                        "ranges": [1.0, 2.0, 3.0],
+                    }
+                ]
+            return [{"info": {"resolution": 0.05, "width": 20, "height": 20}}]
+
+    roscli = FakeRoscliClient()
+    monkeypatch.setattr(
+        LimoMCPService,
+        "_client",
+        staticmethod(lambda *_args, **_kwargs: FakeRosbridgeClient()),
+    )
+    monkeypatch.setattr(
+        "limo_ros_mcp.server.RosCliReadOnlyClient", lambda *_args, **_kwargs: roscli
+    )
+
+    result = LimoMCPService(gateway=object())._collect_summaries(
+        ["global_costmap", "laser_scan"],
+        endpoint="ws://127.0.0.1:9090",
+        timeout_sec=5.0,
+        transport="rosbridge",
+    )
+
+    assert result["ok"] is True
+    assert set(result["summaries"]) == {"global_costmap", "laser_scan"}
 
 
 def test_roscli_readiness_collection_limits_process_fanout(

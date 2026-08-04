@@ -685,10 +685,11 @@ class LimoMCPService:
                         }
                     )
 
-            # Fill the fixed TF listener first, then collect the slow no-array
-            # global costmap summary, then LaserScan, and only then open the
-            # final high-rate rosbridge window. Each step gets a current ROS
-            # header without letting a slow source delay snapshot closure.
+            # Fill the fixed TF listener first, then start the two Python 2 ROS
+            # samplers together.  Their node-registration latency is similar on
+            # the Jetson; serial startup would age the first message while the
+            # second worker connects.  Only after both bounded read-only workers
+            # finish do we open the final high-rate rosbridge window.
             if candidate == "rosbridge" and supplemental is not None:
                 if "tf" in available:
                     try:
@@ -701,58 +702,44 @@ class LimoMCPService:
                             "error": str(exc),
                             "command_dispatched": False,
                         }
-                if "global_costmap" in available:
-                    available.remove("global_costmap")
-                    try:
-                        costmap_result = self._observe_with_client(
-                            "global_costmap",
-                            client=supplemental,
-                            transport="local_roscli_read_only",
-                            include_raw=False,
-                        )
-                    except Exception as exc:  # noqa: BLE001 - preserve partial evidence
-                        failures["global_costmap"] = {
-                            "ok": False,
-                            "observation": "global_costmap",
-                            "error_code": "LIMO_OBSERVATION_FAILED",
-                            "error": str(exc),
-                            "command_dispatched": False,
+                slow_observations = [
+                    name for name in ("global_costmap", "laser_scan") if name in available
+                ]
+                for observation in slow_observations:
+                    available.remove(observation)
+                if slow_observations:
+                    with ThreadPoolExecutor(max_workers=len(slow_observations)) as executor:
+                        slow_futures = {
+                            executor.submit(
+                                self._observe_with_client,
+                                observation,
+                                client=supplemental,
+                                transport="local_roscli_read_only",
+                                include_raw=False,
+                            ): observation
+                            for observation in slow_observations
                         }
-                    else:
-                        summaries["global_costmap"] = costmap_result["summary"]
-                        records["global_costmap"] = {
-                            "summary": costmap_result["summary"],
-                            "received_wall_time": costmap_result.get("received_wall_time"),
-                            "received_monotonic": costmap_result.get("received_monotonic"),
-                            "transport": costmap_result.get("transport"),
-                            "transport_generation": costmap_result.get("transport_generation"),
-                        }
-                if "laser_scan" in available:
-                    available.remove("laser_scan")
-                    try:
-                        laser_result = self._observe_with_client(
-                            "laser_scan",
-                            client=supplemental,
-                            transport="local_roscli_read_only",
-                            include_raw=False,
-                        )
-                    except Exception as exc:  # noqa: BLE001 - preserve partial evidence
-                        failures["laser_scan"] = {
-                            "ok": False,
-                            "observation": "laser_scan",
-                            "error_code": "LIMO_OBSERVATION_FAILED",
-                            "error": str(exc),
-                            "command_dispatched": False,
-                        }
-                    else:
-                        summaries["laser_scan"] = laser_result["summary"]
-                        records["laser_scan"] = {
-                            "summary": laser_result["summary"],
-                            "received_wall_time": laser_result.get("received_wall_time"),
-                            "received_monotonic": laser_result.get("received_monotonic"),
-                            "transport": laser_result.get("transport"),
-                            "transport_generation": laser_result.get("transport_generation"),
-                        }
+                        for future in as_completed(slow_futures):
+                            observation = slow_futures[future]
+                            try:
+                                result = future.result()
+                            except Exception as exc:  # noqa: BLE001 - preserve partial evidence
+                                failures[observation] = {
+                                    "ok": False,
+                                    "observation": observation,
+                                    "error_code": "LIMO_OBSERVATION_FAILED",
+                                    "error": str(exc),
+                                    "command_dispatched": False,
+                                }
+                                continue
+                            summaries[observation] = result["summary"]
+                            records[observation] = {
+                                "summary": result["summary"],
+                                "received_wall_time": result.get("received_wall_time"),
+                                "received_monotonic": result.get("received_monotonic"),
+                                "transport": result.get("transport"),
+                                "transport_generation": result.get("transport_generation"),
+                            }
 
             if available:
                 worker_limit = ROSCLI_MAX_CONCURRENT_OBSERVATIONS if candidate == "roscli" else 12
