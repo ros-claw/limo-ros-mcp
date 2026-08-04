@@ -34,6 +34,9 @@ ALLOWED_USB_CARD_NAMES = ("USB PnP Audio Device", "USB PnP Sound Device")
 BASELINE_CAPTURE_SEC = 1
 LOOPBACK_CAPTURE_SEC = 2
 LOOPBACK_PREROLL_SEC = 0.15
+CAPTURE_BUSY_RETRIES = 3
+CAPTURE_BUSY_RETRY_DELAY_SEC = 0.2
+CAPTURE_START_SETTLE_SEC = 0.05
 LOOPBACK_MIN_TARGET_DBFS = -45.0
 LOOPBACK_MIN_GAIN_DB = 10.0
 LOOPBACK_MIN_PROMINENCE_DB = 8.0
@@ -41,6 +44,11 @@ PULSE_SINK_PATTERN = re.compile(
     r"^alsa_output\.usb-[A-Za-z0-9_.:-]*USB_PnP_(?:Audio|Sound)_Device"
     r"[A-Za-z0-9_.:-]*\.analog-stereo$"
 )
+PULSE_SOURCE_PATTERN = re.compile(
+    r"^alsa_input\.usb-[A-Za-z0-9_.:-]*USB_PnP_(?:Audio|Sound)_Device"
+    r"[A-Za-z0-9_.:-]*\.analog-stereo$"
+)
+ALLOWED_PULSE_SERVER = "unix:/run/rosclaw/pulse/native"
 try:
     STRING_TYPES = (basestring,)  # type: ignore[name-defined]  # noqa: F821
 except NameError:
@@ -199,6 +207,13 @@ def _tone_wav(frequency_hz, duration_sec, volume_percent):
 
 
 def _pulse_server():
+    configured = os.environ.get("ROSCLAW_LIMO_PULSE_SERVER")
+    if configured:
+        if configured != ALLOWED_PULSE_SERVER:
+            raise RequestError("configured PulseAudio server is not allowlisted")
+        if not os.path.exists(configured[len("unix:") :]):
+            raise RequestError("configured PulseAudio server is unavailable")
+        return configured
     runtime_dir = "/run/user/%d" % os.getuid()
     socket_path = os.path.join(runtime_dir, "pulse", "native")
     if os.path.exists(socket_path):
@@ -219,6 +234,22 @@ def _pulse_sink(server):
             matches.append(fields[1])
     if len(matches) != 1:
         raise RequestError("expected exactly one allowlisted USB PnP PulseAudio sink")
+    return matches[0]
+
+
+def _pulse_source(server):
+    code, stdout, stderr = _run(["/usr/bin/pactl", "--server", server, "list", "short", "sources"])
+    if code != 0:
+        raise RequestError("cannot list PulseAudio sources: %s" % stderr.strip())
+    if not isinstance(stdout, str):
+        stdout = stdout.decode("utf-8", "replace")
+    matches = []
+    for line in stdout.splitlines():
+        fields = line.split()
+        if len(fields) >= 2 and PULSE_SOURCE_PATTERN.match(fields[1]):
+            matches.append(fields[1])
+    if len(matches) != 1:
+        raise RequestError("expected exactly one allowlisted USB PnP PulseAudio source")
     return matches[0]
 
 
@@ -321,35 +352,121 @@ def _capture_command(card, duration_sec):
     ]
 
 
-def _capture_pcm(card, duration_sec):
-    code, stdout, stderr = _run(_capture_command(card, duration_sec))
-    if code != 0:
+def _device_busy(stderr):
+    return "Device or resource busy" in str(stderr)
+
+
+def _pulse_capture_command(server, source):
+    return [
+        "/usr/bin/parec",
+        "--server",
+        server,
+        "--device",
+        source,
+        "--client-name",
+        "rosclaw-limo-loopback",
+        "--stream-name",
+        "bounded-microphone-capture",
+        "--format=s16le",
+        "--rate=%d" % SAMPLE_RATE_HZ,
+        "--channels=1",
+        "--latency-msec=20",
+        "--process-time-msec=20",
+        "--raw",
+    ]
+
+
+def _finish_bounded_capture(recorder, started_at, duration_sec):
+    remaining = max(0.0, duration_sec - (time.time() - started_at))
+    if remaining:
+        time.sleep(remaining)
+    if recorder.poll() is None:
+        recorder.terminate()
+    stdout, stderr = recorder.communicate()
+    if recorder.returncode not in (0, -15):
         raise RequestError("microphone capture failed: %s" % stderr.strip())
     if not stdout:
         raise RequestError("microphone capture returned no samples")
     return stdout
 
 
-def _capture_during_playback(card, wav_bytes):
-    recorder = subprocess.Popen(
-        _capture_command(card, LOOPBACK_CAPTURE_SEC),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
+def _capture_pcm(card, duration_sec, server=None):
+    if server is not None:
+        source = _pulse_source(server)
+        recorder = subprocess.Popen(
+            _pulse_capture_command(server, source),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        started_at = time.time()
+        time.sleep(CAPTURE_START_SETTLE_SEC)
+        if recorder.poll() is not None:
+            _stdout, stderr = recorder.communicate()
+            raise RequestError("microphone capture failed: %s" % stderr.strip())
+        return _finish_bounded_capture(recorder, started_at, duration_sec), "pulse:%s" % source
+    for attempt in range(CAPTURE_BUSY_RETRIES):
+        code, stdout, stderr = _run(_capture_command(card, duration_sec))
+        if code == 0:
+            if not stdout:
+                raise RequestError("microphone capture returned no samples")
+            return stdout, "plughw:%d,0" % card
+        if not _device_busy(stderr) or attempt + 1 >= CAPTURE_BUSY_RETRIES:
+            raise RequestError("microphone capture failed: %s" % stderr.strip())
+        time.sleep(CAPTURE_BUSY_RETRY_DELAY_SEC)
+    raise RequestError("microphone capture failed after bounded retries")
+
+
+def _start_capture(card, duration_sec, server=None):
+    if server is not None:
+        source = _pulse_source(server)
+        recorder = subprocess.Popen(
+            _pulse_capture_command(server, source),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        time.sleep(CAPTURE_START_SETTLE_SEC)
+        if recorder.poll() is not None:
+            _stdout, stderr = recorder.communicate()
+            raise RequestError("microphone loopback capture failed: %s" % stderr.strip())
+        return recorder, "pulse:%s" % source
+    for attempt in range(CAPTURE_BUSY_RETRIES):
+        recorder = subprocess.Popen(
+            _capture_command(card, duration_sec),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        time.sleep(CAPTURE_START_SETTLE_SEC)
+        if recorder.poll() is None:
+            return recorder, "plughw:%d,0" % card
+        _stdout, stderr = recorder.communicate()
+        if not _device_busy(stderr) or attempt + 1 >= CAPTURE_BUSY_RETRIES:
+            raise RequestError("microphone loopback capture failed: %s" % stderr.strip())
+        time.sleep(CAPTURE_BUSY_RETRY_DELAY_SEC)
+    raise RequestError("microphone loopback capture failed after bounded retries")
+
+
+def _capture_during_playback(card, wav_bytes, server=None):
+    recorder, capture_device = _start_capture(card, LOOPBACK_CAPTURE_SEC, server)
+    started_at = time.time()
     try:
         time.sleep(LOOPBACK_PREROLL_SEC)
         playback_backend, device = _play_tone(card, wav_bytes)
-        stdout, stderr = recorder.communicate()
+        if server is not None:
+            stdout = _finish_bounded_capture(recorder, started_at, LOOPBACK_CAPTURE_SEC)
+            stderr = b""
+        else:
+            stdout, stderr = recorder.communicate()
     except Exception:
         if recorder.poll() is None:
             recorder.terminate()
             recorder.communicate()
         raise
-    if recorder.returncode != 0:
+    allowed_returncodes = (0, -15) if server is not None else (0,)
+    if recorder.returncode not in allowed_returncodes:
         raise RequestError("microphone loopback capture failed: %s" % stderr.strip())
     if not stdout:
         raise RequestError("microphone loopback capture returned no samples")
-    return playback_backend, device, stdout
+    return playback_backend, device, capture_device, stdout
 
 
 def _pcm_samples(payload):
@@ -408,7 +525,7 @@ def _pcm_metrics(payload, frequency_hz):
     }
 
 
-def _loopback_evidence(baseline_pcm, observed_pcm, frequency_hz, card):
+def _loopback_evidence(baseline_pcm, observed_pcm, frequency_hz, capture_device):
     baseline = _pcm_metrics(baseline_pcm, frequency_hz)
     observed = _pcm_metrics(observed_pcm, frequency_hz)
     target_gain_db = round(observed["target_dbfs"] - baseline["target_dbfs"], 2)
@@ -420,7 +537,7 @@ def _loopback_evidence(baseline_pcm, observed_pcm, frequency_hz, card):
     return {
         "detected": detected,
         "sensor": "onboard_usb_microphone",
-        "capture_device": "plughw:%d,0" % card,
+        "capture_device": capture_device,
         "target_frequency_hz": frequency_hz,
         "target_gain_db": target_gain_db,
         "thresholds": {
@@ -438,20 +555,22 @@ def _loopback_evidence(baseline_pcm, observed_pcm, frequency_hz, card):
 
 def _run_audio(request):
     card = _usb_audio_card()
-    baseline_pcm = _capture_pcm(card, BASELINE_CAPTURE_SEC)
+    server = _pulse_server()
+    baseline_pcm, capture_device = _capture_pcm(card, BASELINE_CAPTURE_SEC, server)
     wav_bytes, frame_count = _tone_wav(
         request["frequency_hz"], request["duration_sec"], request["volume_percent"]
     )
     started = time.time()
     restored = False
-    server = _pulse_server()
     if server is not None:
         sink = _pulse_sink(server)
         original_state = _pulse_sink_state(server, sink)
         reference_volumes = [PULSE_REFERENCE_VOLUME] * len(original_state["channel_volumes"])
         try:
             _set_pulse_sink_state(server, sink, reference_volumes, True)
-            playback_backend, device, observed_pcm = _capture_during_playback(card, wav_bytes)
+            playback_backend, device, observed_capture_device, observed_pcm = (
+                _capture_during_playback(card, wav_bytes, server)
+            )
         finally:
             _set_pulse_sink_state(
                 server,
@@ -469,7 +588,9 @@ def _run_audio(request):
         original_percent, original_unmuted = _speaker_state(card)
         try:
             _set_speaker_state(card, 100, True, mapped=True)
-            playback_backend, device, observed_pcm = _capture_during_playback(card, wav_bytes)
+            playback_backend, device, observed_capture_device, observed_pcm = (
+                _capture_during_playback(card, wav_bytes)
+            )
         finally:
             _set_speaker_state(card, original_percent, original_unmuted)
             restored = True
@@ -478,7 +599,11 @@ def _run_audio(request):
             "volume_percent": original_percent,
             "unmuted": original_unmuted,
         }
-    loopback = _loopback_evidence(baseline_pcm, observed_pcm, request["frequency_hz"], card)
+    if observed_capture_device != capture_device:
+        raise RequestError("microphone capture device changed during loopback")
+    loopback = _loopback_evidence(
+        baseline_pcm, observed_pcm, request["frequency_hz"], capture_device
+    )
     return {
         "protocol": PROTOCOL,
         "ok": True,

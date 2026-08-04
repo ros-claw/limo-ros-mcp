@@ -204,6 +204,37 @@ def test_tone_worker_falls_back_to_fixed_alsa_device(monkeypatch) -> None:
     assert calls == [(["/usr/bin/aplay", "-q", "-D", "plughw:2,0"], b"RIFF-test")]
 
 
+def test_tone_worker_retries_transient_busy_microphone(monkeypatch) -> None:
+    calls = 0
+
+    def fake_run(_command, input_bytes=None, env=None):
+        nonlocal calls
+        del input_bytes, env
+        calls += 1
+        if calls < 3:
+            return 1, b"", b"audio open error: Device or resource busy"
+        return 0, b"pcm", b""
+
+    sleeps: list[float] = []
+    monkeypatch.setattr(TONE, "_run", fake_run)
+    monkeypatch.setattr(TONE.time, "sleep", sleeps.append)
+
+    assert TONE._capture_pcm(2, 1) == (b"pcm", "plughw:2,0")
+    assert calls == 3
+    assert sleeps == [TONE.CAPTURE_BUSY_RETRY_DELAY_SEC] * 2
+
+
+def test_tone_worker_does_not_retry_non_busy_microphone_error(monkeypatch) -> None:
+    monkeypatch.setattr(
+        TONE,
+        "_run",
+        lambda *_args, **_kwargs: (1, b"", b"audio open error: no such device"),
+    )
+
+    with pytest.raises(TONE.RequestError, match="no such device"):
+        TONE._capture_pcm(2, 1)
+
+
 def test_tone_worker_rejects_ambiguous_pulseaudio_sinks(monkeypatch) -> None:
     inventory = (
         b"1\talsa_output.usb-0c76_USB_PnP_Audio_Device-00.analog-stereo\tmodule\n"
@@ -213,6 +244,36 @@ def test_tone_worker_rejects_ambiguous_pulseaudio_sinks(monkeypatch) -> None:
 
     with pytest.raises(TONE.RequestError, match="exactly one"):
         TONE._pulse_sink("unix:/run/user/1000/pulse/native")
+
+
+def test_tone_worker_selects_allowlisted_pulseaudio_source(monkeypatch) -> None:
+    inventory = (
+        b"1\talsa_output.usb-0c76_USB_PnP_Audio_Device-00.analog-stereo.monitor\tmodule\n"
+        b"2\talsa_input.usb-0c76_USB_PnP_Audio_Device-00.analog-stereo\tmodule\n"
+        b"3\talsa_input.platform-sound.analog-stereo\tmodule\n"
+    )
+    monkeypatch.setattr(TONE, "_run", lambda *_args, **_kwargs: (0, inventory, b""))
+
+    assert TONE._pulse_source(TONE.ALLOWED_PULSE_SERVER) == (
+        "alsa_input.usb-0c76_USB_PnP_Audio_Device-00.analog-stereo"
+    )
+
+
+def test_tone_worker_rejects_unallowlisted_explicit_pulse_server(monkeypatch) -> None:
+    monkeypatch.setenv("ROSCLAW_LIMO_PULSE_SERVER", "unix:/tmp/untrusted-pulse")
+
+    with pytest.raises(TONE.RequestError, match="not allowlisted"):
+        TONE._pulse_server()
+
+
+def test_tone_worker_bounds_pulse_capture_chunks() -> None:
+    command = TONE._pulse_capture_command(
+        TONE.ALLOWED_PULSE_SERVER,
+        "alsa_input.usb-0c76_USB_PnP_Audio_Device-00.analog-stereo",
+    )
+
+    assert "--latency-msec=20" in command
+    assert "--process-time-msec=20" in command
 
 
 def test_tone_worker_uses_reference_gain_and_restores_alsa_state(monkeypatch) -> None:
@@ -228,12 +289,20 @@ def test_tone_worker_uses_reference_gain_and_restores_alsa_state(monkeypatch) ->
     monkeypatch.setattr(
         TONE,
         "_capture_pcm",
-        lambda _card, _duration: _raw_tone(440, 1.0, 0.0001),
+        lambda _card, _duration, _server=None: (
+            _raw_tone(440, 1.0, 0.0001),
+            "plughw:2,0",
+        ),
     )
     monkeypatch.setattr(
         TONE,
         "_capture_during_playback",
-        lambda _card, _wav: ("alsa", "plughw:2,0", _raw_tone(660, 2.0, 0.1)),
+        lambda _card, _wav: (
+            "alsa",
+            "plughw:2,0",
+            "plughw:2,0",
+            _raw_tone(660, 2.0, 0.1),
+        ),
     )
 
     result = TONE._run_audio(_tone_request())
@@ -274,7 +343,7 @@ def test_tone_loopback_detects_target_frequency_gain() -> None:
     baseline = _raw_tone(440, 1.0, 0.001)
     observed = _raw_tone(660, 2.0, 0.08)
 
-    evidence = TONE._loopback_evidence(baseline, observed, 660, 2)
+    evidence = TONE._loopback_evidence(baseline, observed, 660, "plughw:2,0")
 
     assert evidence["detected"] is True
     assert evidence["capture_device"] == "plughw:2,0"
@@ -287,7 +356,7 @@ def test_tone_loopback_rejects_unrelated_loud_audio() -> None:
     baseline = _raw_tone(440, 1.0, 0.001)
     observed = _raw_tone(880, 2.0, 0.2)
 
-    evidence = TONE._loopback_evidence(baseline, observed, 660, 2)
+    evidence = TONE._loopback_evidence(baseline, observed, 660, "plughw:2,0")
 
     assert evidence["detected"] is False
 
@@ -317,7 +386,7 @@ def test_speech_loopback_requires_rms_gain() -> None:
     quiet = struct.pack("<16000h", *([20] * 16000))
     audible = struct.pack("<32000h", *([4000, -4000] * 16000))
 
-    evidence = SPEECH._speech_loopback(quiet, audible, 2)
+    evidence = SPEECH._speech_loopback(quiet, audible, "plughw:2,0")
 
     assert evidence["detected"] is True
     assert evidence["content_recognition_performed"] is False
