@@ -141,7 +141,7 @@ def test_laser_scan_compacts_ranges_into_clearance_sectors() -> None:
             "angle_increment": math.pi / 4,
             "range_min": 0.1,
             "range_max": 10.0,
-            "ranges": [1.0, 2.0, 0.5, float("inf"), 4.0],
+            "ranges": [1.0, 2.0, 0.5, "inf", 4.0],
         }
     )
 

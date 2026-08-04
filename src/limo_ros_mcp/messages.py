@@ -243,6 +243,18 @@ def summarize_laser_scan(message: dict[str, Any]) -> dict[str, Any]:
     finite_valid_count = 0
     no_return_count = 0
     for index, raw in enumerate(raw_ranges):
+        if (
+            isinstance(raw, str)
+            and raw in {"inf", "+inf", "Infinity", "+Infinity"}
+            and scan_parameters_valid
+            and range_max is not None
+            and angle_min is not None
+            and angle_increment is not None
+        ):
+            angle = angle_min + index * angle_increment
+            samples.append((angle, range_max))
+            no_return_count += 1
+            continue
         if isinstance(raw, bool) or not isinstance(raw, (int, float)):
             continue
         distance = float(raw)

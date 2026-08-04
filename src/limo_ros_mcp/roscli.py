@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -12,6 +13,12 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+
+_READINESS_WORKER_PROTOCOL = "rosclaw.limo.readiness-worker.v1"
+_READINESS_WORKER_TOPICS = {
+    ("/move_base/global_costmap/costmap", "nav_msgs/OccupancyGrid"): "global_costmap",
+    ("/scan", "sensor_msgs/LaserScan"): "laser_scan",
+}
 
 
 def build_ros1_cli_environment() -> dict[str, str]:
@@ -75,6 +82,10 @@ class RosCliReadOnlyClient:
         self.rosnode: str = rosnode
         self.rosrun: str = rosrun
         self.timeout_command: str = timeout_command
+        self.python2 = shutil.which("python2")
+        self.readiness_worker = (
+            Path(__file__).resolve().parents[2] / "worker" / "limo_readiness_worker.py"
+        )
 
     def _run(self, command: list[str]) -> str:
         result = subprocess.run(
@@ -162,6 +173,9 @@ class RosCliReadOnlyClient:
         if self.topic_types.get(topic) != message_type:
             raise ValueError("topic is not present in the immutable LIMO observation allowlist")
         self._verified_type(topic, message_type)
+        readiness_observation = _READINESS_WORKER_TOPICS.get((topic, message_type))
+        if count == 1 and readiness_observation is not None:
+            return [self._sample_with_readiness_worker(readiness_observation)]
         started = time.monotonic()
         command = [self.rostopic, "echo"]
         if message_type in {
@@ -179,6 +193,44 @@ class RosCliReadOnlyClient:
             )
         self.last_sample_elapsed_sec = time.monotonic() - started
         return messages
+
+    def _sample_with_readiness_worker(self, observation: str) -> dict[str, Any]:
+        if not self.python2 or not self.readiness_worker.is_file():
+            raise RuntimeError("bounded ROS readiness worker is unavailable")
+        request = {
+            "protocol": _READINESS_WORKER_PROTOCOL,
+            "observation": observation,
+            "timeout_sec": self.timeout_sec,
+        }
+        started = time.monotonic()
+        result = subprocess.run(
+            [self.python2, str(self.readiness_worker)],
+            check=False,
+            capture_output=True,
+            text=True,
+            input=json.dumps(request, separators=(",", ":")),
+            timeout=self.timeout_sec + 2.0,
+            env=self._environment,
+        )
+        self.last_sample_elapsed_sec = time.monotonic() - started
+        if len(result.stdout.encode("utf-8")) > self.max_output_bytes:
+            raise RuntimeError("ROS readiness worker output exceeds the configured size limit")
+        try:
+            response = json.loads(result.stdout)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError("ROS readiness worker returned invalid JSON") from exc
+        message = response.get("message") if isinstance(response, dict) else None
+        if (
+            result.returncode != 0
+            or not isinstance(response, dict)
+            or response.get("protocol") != _READINESS_WORKER_PROTOCOL
+            or response.get("observation") != observation
+            or response.get("ok") is not True
+            or not isinstance(message, dict)
+        ):
+            error = response.get("error") if isinstance(response, dict) else None
+            raise RuntimeError(str(error or result.stderr.strip() or "ROS readiness worker failed"))
+        return dict(message)
 
     def subscribe_once(self, topic: str, message_type: str) -> dict[str, Any]:
         return self.subscribe_many(topic, message_type, count=1)[0]
