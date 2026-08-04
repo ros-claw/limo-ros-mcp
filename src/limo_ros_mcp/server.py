@@ -685,11 +685,11 @@ class LimoMCPService:
                         }
                     )
 
-            # Fill the fixed TF listener first, then start the two Python 2 ROS
-            # samplers together.  Their node-registration latency is similar on
-            # the Jetson; serial startup would age the first message while the
-            # second worker connects.  Only after both bounded read-only workers
-            # finish do we open the final high-rate rosbridge window.
+            # Fill the fixed TF listener first, then collect the global costmap
+            # metadata. Its five-second freshness budget covers the final
+            # window. LaserScan has a tighter two-second budget, so its bounded
+            # Python 2 sampler starts alongside the final high-rate rosbridge
+            # reads below and seals near snapshot closure.
             if candidate == "rosbridge" and supplemental is not None:
                 if "tf" in available:
                     try:
@@ -702,9 +702,7 @@ class LimoMCPService:
                             "error": str(exc),
                             "command_dispatched": False,
                         }
-                slow_observations = [
-                    name for name in ("global_costmap", "laser_scan") if name in available
-                ]
+                slow_observations = [name for name in ("global_costmap",) if name in available]
                 for observation in slow_observations:
                     available.remove(observation)
                 if slow_observations:
@@ -746,11 +744,23 @@ class LimoMCPService:
                 with ThreadPoolExecutor(max_workers=min(worker_limit, len(available))) as executor:
                     future_names: dict[Any, str] = {}
                     for observation in available:
+                        observation_client = (
+                            supplemental
+                            if candidate == "rosbridge"
+                            and observation == "laser_scan"
+                            and supplemental is not None
+                            else client
+                        )
+                        observation_transport = (
+                            "local_roscli_read_only"
+                            if observation_client is supplemental
+                            else candidate
+                        )
                         future = executor.submit(
                             self._observe_with_client,
                             observation,
-                            client=client,
-                            transport=candidate,
+                            client=observation_client,
+                            transport=observation_transport,
                             include_raw=False,
                             sample_count=(
                                 # The composed map->base chain is independently
