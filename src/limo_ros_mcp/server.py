@@ -14,7 +14,7 @@ from datetime import UTC, datetime, timedelta
 from threading import Lock
 from typing import Any, Literal, cast
 
-from mcp.server.fastmcp import Context, FastMCP
+from mcp.server.fastmcp import Context, FastMCP, Image
 from mcp.types import ToolAnnotations
 
 from limo_ros_mcp.action_specs import (
@@ -30,6 +30,7 @@ from limo_ros_mcp.action_specs import (
     validate_tone,
 )
 from limo_ros_mcp.cache import ObservationHub
+from limo_ros_mcp.camera import encode_ros_image_png
 from limo_ros_mcp.clocks import ClockJumpTracker
 from limo_ros_mcp.contract import (
     LIMO_OBSERVATION_TOPICS,
@@ -1001,12 +1002,76 @@ class LimoMCPService:
             "depth_camera_info",
         ]
         optional = ["depth_points", "infrared_image", "infrared_camera_info"]
-        result = self._collect_summaries(
-            [*core, *optional],
-            endpoint=endpoint,
-            timeout_sec=timeout_sec,
-            transport=transport,
-        )
+        requested = [*core, *optional]
+        probe = self.probe_ros(endpoint, transport, timeout_sec)
+        available = set(probe.get("available_observations", []))
+        summaries: dict[str, Any] = {}
+        records: dict[str, Any] = {}
+        failures: dict[str, Any] = {
+            name: {
+                "ok": False,
+                "observation": name,
+                "error_code": "LIMO_CAMERA_STREAM_UNAVAILABLE",
+                "error": "camera stream is not advertised in the live ROS graph",
+                "command_dispatched": False,
+            }
+            for name in requested
+            if name not in available
+        }
+        observable = [name for name in requested if name in available]
+        if observable:
+            with ThreadPoolExecutor(max_workers=min(7, len(observable))) as executor:
+                future_names = {
+                    executor.submit(
+                        self.observe,
+                        name,
+                        endpoint,
+                        timeout_sec,
+                        str(probe.get("transport", transport)),
+                        False,
+                    ): name
+                    for name in observable
+                }
+                for future in as_completed(future_names):
+                    name = future_names[future]
+                    try:
+                        observed = future.result()
+                    except Exception as exc:  # noqa: BLE001 - preserve partial camera evidence
+                        observed = {
+                            "ok": False,
+                            "error_code": "LIMO_OBSERVATION_FAILED",
+                            "error": str(exc),
+                        }
+                    if observed.get("ok") is True and isinstance(observed.get("summary"), dict):
+                        summaries[name] = observed["summary"]
+                        records[name] = {
+                            "summary": observed["summary"],
+                            "received_wall_time": observed.get("received_wall_time"),
+                            "received_monotonic": observed.get("received_monotonic"),
+                            "transport": observed.get("transport"),
+                            "transport_generation": observed.get("transport_generation"),
+                        }
+                    else:
+                        failures[name] = {
+                            "ok": False,
+                            "observation": name,
+                            "error_code": observed.get("error_code", "LIMO_OBSERVATION_FAILED"),
+                            "error": observed.get("error", observed.get("errors")),
+                            "command_dispatched": False,
+                        }
+        result = {
+            "ok": not failures,
+            "requested_observations": requested,
+            "summaries": summaries,
+            "observation_records": records,
+            "failures": failures,
+            "available_count": len(summaries),
+            "missing_count": len(failures),
+            "transport": probe.get("transport", transport),
+            "endpoint": endpoint,
+            "trust_level": "LIVE_ROS_TOPIC_OBSERVATION",
+            "command_dispatched": False,
+        }
         failures = result.get("failures", {})
         summaries = result.get("summaries", {})
         core_failures = {
@@ -1028,6 +1093,52 @@ class LimoMCPService:
             "core_failures": core_failures,
             "optional_inactive": optional_inactive,
         }
+
+    def capture_camera_frame(
+        self,
+        endpoint: str = "ws://127.0.0.1:9090",
+        timeout_sec: float = 5.0,
+        stream: str = "color",
+        max_dimension: int = 640,
+    ) -> tuple[dict[str, Any], bytes | None]:
+        """Capture one bounded camera frame through the read-only rosbridge client."""
+
+        observations = {"color": "color_image", "infrared": "infrared_image"}
+        observation = observations.get(str(stream).lower())
+        if observation is None:
+            raise ValueError("stream must be color or infrared")
+        timeout_sec = self._validate_timeout(timeout_sec)
+        topic, message_type = LIMO_OBSERVATION_TOPICS[observation]
+        try:
+            client = self._observation_hub.client("rosbridge", endpoint, timeout_sec)
+            message = client.subscribe_once(topic, message_type)
+            encoded = encode_ros_image_png(message, max_dimension=max_dimension)
+        except Exception as exc:  # noqa: BLE001 - return an honest MCP observation failure
+            return (
+                {
+                    "ok": False,
+                    "observation": observation,
+                    "topic": topic,
+                    "error_code": "LIMO_CAMERA_FRAME_UNAVAILABLE",
+                    "error": str(exc),
+                    "transport": "rosbridge",
+                    "command_dispatched": False,
+                },
+                None,
+            )
+        metadata = {
+            "ok": True,
+            "observation": observation,
+            "topic": topic,
+            "message_type": message_type,
+            "transport": "rosbridge",
+            "transport_generation": getattr(client, "transport_generation", None),
+            "trust_level": "LIVE_ROS_CAMERA_FRAME",
+            "command_dispatched": False,
+            "usable_for_real_execution": False,
+            **encoded.metadata,
+        }
+        return metadata, encoded.png
 
     def peripheral_inventory(self) -> dict[str, Any]:
         return self._peripheral_inspector.inventory()
@@ -1951,6 +2062,33 @@ def build_mcp_server(
         return await asyncio.to_thread(
             implementation.camera_state, endpoint, timeout_sec, transport
         )
+
+    @mcp.tool(
+        description=(
+            "Capture one bounded Dabai color or infrared frame as MCP ImageContent. "
+            "This is read-only, requires loopback rosbridge, never stores the frame, and "
+            "never publishes a ROS topic."
+        ),
+        annotations=READ_ONLY_TOOL,
+        meta={"physicalExecution": False, "returnsImage": True},
+        structured_output=False,
+    )
+    async def limo_capture_camera_frame(
+        endpoint: str = "ws://127.0.0.1:9090",
+        timeout_sec: float = 5.0,
+        stream: Literal["color", "infrared"] = "color",
+        max_dimension: int = 640,
+    ) -> Any:
+        metadata, png = await asyncio.to_thread(
+            implementation.capture_camera_frame,
+            endpoint,
+            timeout_sec,
+            stream,
+            max_dimension,
+        )
+        if png is None:
+            return metadata
+        return [metadata, Image(data=png, format="png")]
 
     @mcp.tool(
         description=(

@@ -34,7 +34,7 @@ USB、音频、显示、触摸屏、相机健康与 Jetson 证据边界详见
 | 契约与 ROS graph | `limo_get_contract`、`limo_list_observations`、`limo_probe_ros`、`limo_get_topic_info` |
 | 消息检查 | `limo_observe`、`limo_sample_topic` |
 | 巡检快照 | `limo_get_base_state`、`limo_get_laser_summary`、`limo_get_localization_state`、`limo_get_navigation_state`、`limo_get_map_summary`、`limo_get_diagnostics`、`limo_get_transform_state`、`limo_get_patrol_readiness` |
-| 相机与外设 | `limo_get_camera_state`、`limo_get_dabai_device_state`、`limo_list_peripherals`、`limo_get_audio_state`、`limo_measure_microphone`、`limo_get_display_state`、`limo_get_platform_health` |
+| 相机与外设 | `limo_get_camera_state`、`limo_capture_camera_frame`、`limo_get_dabai_device_state`、`limo_list_peripherals`、`limo_get_audio_state`、`limo_measure_microphone`、`limo_get_display_state`、`limo_get_platform_health` |
 | 参数验证 | `limo_validate_navigation_goal`、`limo_validate_velocity_command` |
 | ROSClaw 控制面 | `limo_get_runtime_status`、`limo_request_navigation`、`limo_request_initial_pose`、`limo_request_tone`、`limo_request_speech`、`limo_get_action_status`、`limo_get_execution_receipt`、`limo_emergency_stop` |
 

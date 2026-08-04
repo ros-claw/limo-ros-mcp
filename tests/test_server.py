@@ -27,7 +27,7 @@ def test_mcp_process_status_exposes_bounded_restart_evidence() -> None:
 
     assert result["schema_version"] == "limo.mcp-process.v1"
     assert result["server_name"] == "rosclaw-limo"
-    assert result["package_version"] == "0.9.0"
+    assert result["package_version"] == "0.10.0"
     assert isinstance(result["distribution_version"], str)
     assert isinstance(result["installation_metadata_matches_source"], bool)
     assert isinstance(result["pid"], int)
@@ -73,7 +73,7 @@ def test_package_and_manifest_versions_match() -> None:
     project = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
 
     assert manifest["version"] == project["project"]["version"]
-    assert manifest["mcp_tool_count"] == 33
+    assert manifest["mcp_tool_count"] == 34
 
 
 def test_dabai_camera_contract_uses_live_astra_topics() -> None:
@@ -107,6 +107,7 @@ async def test_server_exposes_no_raw_ros_publish_tool() -> None:
 
     assert names == {
         "limo_get_base_state",
+        "limo_capture_camera_frame",
         "limo_get_camera_state",
         "limo_get_contract",
         "limo_get_context",
@@ -148,6 +149,7 @@ async def test_server_exposes_no_raw_ros_publish_tool() -> None:
         "limo_get_topic_info",
         "limo_sample_topic",
         "limo_get_base_state",
+        "limo_capture_camera_frame",
         "limo_get_camera_state",
         "limo_get_laser_summary",
         "limo_get_localization_state",
@@ -231,25 +233,27 @@ def test_large_binary_raw_observations_are_denied(observation: str) -> None:
 def test_camera_state_keeps_inactive_ir_optional(monkeypatch: pytest.MonkeyPatch) -> None:
     service = LimoMCPService(gateway=object())
     core = {
-        name: {"width": 640, "height": 480}
-        for name in (
-            "color_image",
-            "color_camera_info",
-            "depth_image",
-            "depth_camera_info",
-        )
+        "color_image",
+        "color_camera_info",
+        "depth_image",
+        "depth_camera_info",
     }
     monkeypatch.setattr(
         service,
-        "_collect_summaries",
+        "probe_ros",
         lambda *_args, **_kwargs: {
-            "ok": False,
-            "summaries": core,
-            "failures": {
-                "depth_points": {"error_code": "LIMO_OBSERVATION_FAILED"},
-                "infrared_image": {"error_code": "LIMO_OBSERVATION_FAILED"},
-                "infrared_camera_info": {"error_code": "LIMO_OBSERVATION_FAILED"},
-            },
+            "ok": True,
+            "transport": "rosbridge",
+            "available_observations": sorted(core),
+        },
+    )
+    monkeypatch.setattr(
+        service,
+        "observe",
+        lambda name, *_args, **_kwargs: {
+            "ok": True,
+            "summary": {"width": 640, "height": 480, "name": name},
+            "transport": "rosbridge",
         },
     )
 
