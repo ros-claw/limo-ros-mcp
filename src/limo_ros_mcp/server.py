@@ -666,8 +666,7 @@ class LimoMCPService:
                         available.append(observation)
 
             if candidate == "rosbridge" and any(
-                observation in available
-                for observation in ("global_costmap", "laser_scan", "tf")
+                observation in available for observation in ("global_costmap", "laser_scan", "tf")
             ):
                 try:
                     supplemental = RosCliReadOnlyClient(
@@ -765,9 +764,7 @@ class LimoMCPService:
                         topic, _message_type = LIMO_OBSERVATION_TOPICS[observation]
                         batch_record = batch_records.get(topic)
                         message = (
-                            batch_record.get("message")
-                            if isinstance(batch_record, dict)
-                            else None
+                            batch_record.get("message") if isinstance(batch_record, dict) else None
                         )
                         if not isinstance(message, dict):
                             failures[observation] = {
@@ -790,9 +787,7 @@ class LimoMCPService:
                             "received_wall_time": batch_record.get("received_wall_time"),
                             "received_monotonic": batch_record.get("received_monotonic"),
                             "transport": candidate,
-                            "transport_generation": getattr(
-                                client, "transport_generation", None
-                            ),
+                            "transport_generation": getattr(client, "transport_generation", None),
                         }
                         self._observation_hub.remember(
                             observation,

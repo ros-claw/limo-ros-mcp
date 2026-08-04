@@ -57,11 +57,7 @@ def validate_speech(
             "LIMO_SPEECH_VOLUME_INVALID",
             "volume_percent must be an integer within [10, 25].",
         )
-    if (
-        isinstance(rate_wpm, bool)
-        or not isinstance(rate_wpm, int)
-        or not 120 <= rate_wpm <= 200
-    ):
+    if isinstance(rate_wpm, bool) or not isinstance(rate_wpm, int) or not 120 <= rate_wpm <= 200:
         return _block(
             "LIMO_SPEECH_RATE_INVALID",
             "rate_wpm must be an integer within [120, 200].",

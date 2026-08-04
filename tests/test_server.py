@@ -569,9 +569,7 @@ def test_rosbridge_readiness_collects_laser_through_bounded_roscli(
 
     assert result["ok"] is True
     assert result["summaries"]["laser_scan"]["sample_count"] == 3
-    assert result["observation_records"]["laser_scan"]["transport"] == (
-        "local_roscli_read_only"
-    )
+    assert result["observation_records"]["laser_scan"]["transport"] == ("local_roscli_read_only")
 
 
 def test_rosbridge_readiness_uses_fixed_slow_workers_then_one_batch(

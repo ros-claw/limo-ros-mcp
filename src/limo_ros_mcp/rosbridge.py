@@ -299,9 +299,7 @@ class RosbridgeReadOnlyClient:
 
         if not topic_types or len(topic_types) > 16:
             raise ValueError("batch subscriptions must contain between 1 and 16 topics")
-        subscriptions = {
-            topic: f"limo-mcp-{uuid.uuid4()}" for topic in sorted(topic_types)
-        }
+        subscriptions = {topic: f"limo-mcp-{uuid.uuid4()}" for topic in sorted(topic_types)}
         messages: dict[str, dict[str, Any]] = {}
         with closing(self._connect()) as connection:
             for topic, subscription_id in subscriptions.items():

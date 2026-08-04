@@ -236,9 +236,7 @@ def test_readiness_worker_rejects_mismatched_response(monkeypatch: Any) -> None:
     monkeypatch.setattr("shutil.which", lambda name: f"/usr/bin/{name}")
     monkeypatch.setattr("subprocess.run", run)
     monkeypatch.setattr("limo_ros_mcp.roscli.Path.is_file", lambda _path: True)
-    client = RosCliReadOnlyClient(
-        {"/move_base/global_costmap/costmap": "nav_msgs/OccupancyGrid"}
-    )
+    client = RosCliReadOnlyClient({"/move_base/global_costmap/costmap": "nav_msgs/OccupancyGrid"})
 
     with pytest.raises(RuntimeError, match="ROS readiness worker failed"):
         client.subscribe_many(

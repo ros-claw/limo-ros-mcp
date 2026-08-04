@@ -207,7 +207,9 @@ def _normalize_pcm(pcm, volume_percent):
         raise RequestError("synthesized speech is silent")
     target_peak = 32767.0 * 0.9 * volume_percent / 100.0
     scale = target_peak / peak
-    normalized = array.array("h", [int(max(-32768, min(32767, value * scale))) for value in samples])
+    normalized = array.array(
+        "h", [int(max(-32768, min(32767, value * scale))) for value in samples]
+    )
     if sys.byteorder != "little":
         normalized.byteswap()
     normalized_bytes = (
@@ -264,12 +266,8 @@ def _speech_loopback(baseline_pcm, observed_pcm, card):
 def _run_speech(request):
     card = audio._usb_audio_card()
     baseline_pcm = audio._capture_pcm(card, audio.BASELINE_CAPTURE_SEC)
-    sample_rate, raw_pcm = _synthesize(
-        request["text"], request["language"], request["rate_wpm"]
-    )
-    pcm, frame_count, digital_peak_scale = _normalize_pcm(
-        raw_pcm, request["volume_percent"]
-    )
+    sample_rate, raw_pcm = _synthesize(request["text"], request["language"], request["rate_wpm"])
+    pcm, frame_count, digital_peak_scale = _normalize_pcm(raw_pcm, request["volume_percent"])
     speech_wav = _wav_bytes(sample_rate, pcm)
     started = time.time()
     restored = False
@@ -277,9 +275,7 @@ def _run_speech(request):
     if server is not None:
         sink = audio._pulse_sink(server)
         original_state = audio._pulse_sink_state(server, sink)
-        reference_volumes = [audio.PULSE_REFERENCE_VOLUME] * len(
-            original_state["channel_volumes"]
-        )
+        reference_volumes = [audio.PULSE_REFERENCE_VOLUME] * len(original_state["channel_volumes"])
         try:
             audio._set_pulse_sink_state(server, sink, reference_volumes, True)
             playback_backend, device, observed_pcm = audio._capture_during_playback(

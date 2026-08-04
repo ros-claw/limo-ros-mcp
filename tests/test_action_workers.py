@@ -339,7 +339,11 @@ def test_navigation_worker_waits_for_post_dispatch_amcl(monkeypatch) -> None:
         return type(
             "Message",
             (),
-            {"header": type("Header", (), {"stamp": type("Stamp", (), {"to_sec": lambda self: stamp})()})()},
+            {
+                "header": type(
+                    "Header", (), {"stamp": type("Stamp", (), {"to_sec": lambda self: stamp})()}
+                )()
+            },
         )()
 
     before = message(99.0)
@@ -385,9 +389,7 @@ def test_navigation_worker_returns_none_when_post_dispatch_amcl_is_event_silent(
     clock = iter([10.0, 10.0, 10.2])
     monkeypatch.setattr(NAVIGATION.time, "time", lambda: next(clock))
 
-    observed = NAVIGATION._wait_for_post_dispatch_amcl(
-        FakeRospy(), state, 10.0, 100.0, 0.1
-    )
+    observed = NAVIGATION._wait_for_post_dispatch_amcl(FakeRospy(), state, 10.0, 100.0, 0.1)
 
     assert observed is None
 
