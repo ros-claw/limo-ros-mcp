@@ -19,7 +19,7 @@ thresholds:
   status_fresh_sec: 3.0
   odom_fresh_sec: 3.0
   imu_fresh_sec: 2.0
-  laser_fresh_sec: 2.0
+  laser_fresh_sec: 2.5
   amcl_fresh_sec: 5.0
   navigation_fresh_sec: 5.0
   costmap_fresh_sec: 5.0

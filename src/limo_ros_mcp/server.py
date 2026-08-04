@@ -685,10 +685,10 @@ class LimoMCPService:
                         }
                     )
 
-            # Fill the fixed TF listener first, then collect only the large
-            # global costmap through the compact Python 2 worker. LaserScan is a
-            # small bounded message and joins the remaining high-rate topics on
-            # one multiplexed rosbridge connection below, sealing near closure.
+            # Fill the fixed TF listener first, then start both fixed Python 2
+            # samplers together. LaserScan remains on the ROS worker because
+            # non-finite no-return ranges are not reliable on rosbridge's JSON
+            # path. The remaining topics use one multiplexed connection below.
             if candidate == "rosbridge" and supplemental is not None:
                 if "tf" in available:
                     try:
@@ -701,7 +701,9 @@ class LimoMCPService:
                             "error": str(exc),
                             "command_dispatched": False,
                         }
-                slow_observations = [name for name in ("global_costmap",) if name in available]
+                slow_observations = [
+                    name for name in ("global_costmap", "laser_scan") if name in available
+                ]
                 for observation in slow_observations:
                     available.remove(observation)
                 if slow_observations:
