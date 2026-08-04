@@ -686,11 +686,12 @@ class LimoMCPService:
                     )
 
             # A full 1984x1984 global costmap takes roughly 25 seconds to become
-            # JSON over rosbridge on the LIMO Jetson.  Resolve its fixed --noarr
-            # metadata and the composed TF chain concurrently, then immediately
-            # collect all high-rate rosbridge evidence inside one coherent window.
+            # JSON over rosbridge on the LIMO Jetson. Resolve its fixed --noarr
+            # metadata and the composed TF chain concurrently, then collect the
+            # laser together with the high-rate rosbridge evidence so it is not
+            # stale by the time the TF listener has filled.
             if candidate == "rosbridge" and supplemental is not None:
-                with ThreadPoolExecutor(max_workers=3) as executor:
+                with ThreadPoolExecutor(max_workers=2) as executor:
                     preflight_futures: dict[Any, str] = {}
                     if "global_costmap" in available:
                         available.remove("global_costmap")
@@ -703,17 +704,6 @@ class LimoMCPService:
                                 include_raw=False,
                             )
                         ] = "global_costmap"
-                    if "laser_scan" in available:
-                        available.remove("laser_scan")
-                        preflight_futures[
-                            executor.submit(
-                                self._observe_with_client,
-                                "laser_scan",
-                                client=supplemental,
-                                transport="local_roscli_read_only",
-                                include_raw=False,
-                            )
-                        ] = "laser_scan"
                     if "tf" in available:
                         preflight_futures[
                             executor.submit(supplemental.transform_available, "map", "base_link")
@@ -747,12 +737,25 @@ class LimoMCPService:
             if available:
                 worker_limit = ROSCLI_MAX_CONCURRENT_OBSERVATIONS if candidate == "roscli" else 12
                 with ThreadPoolExecutor(max_workers=min(worker_limit, len(available))) as executor:
-                    future_names = {
-                        executor.submit(
+                    future_names: dict[Any, str] = {}
+                    for observation in available:
+                        observation_client = (
+                            supplemental
+                            if candidate == "rosbridge"
+                            and observation == "laser_scan"
+                            and supplemental is not None
+                            else client
+                        )
+                        observation_transport = (
+                            "local_roscli_read_only"
+                            if observation_client is supplemental
+                            else candidate
+                        )
+                        future = executor.submit(
                             self._observe_with_client,
                             observation,
-                            client=client,
-                            transport=candidate,
+                            client=observation_client,
+                            transport=observation_transport,
                             include_raw=False,
                             sample_count=(
                                 100
@@ -761,9 +764,8 @@ class LimoMCPService:
                                 if observation == "tf"
                                 else 1
                             ),
-                        ): observation
-                        for observation in available
-                    }
+                        )
+                        future_names[future] = observation
                     for future in as_completed(future_names):
                         observation = future_names[future]
                         try:
