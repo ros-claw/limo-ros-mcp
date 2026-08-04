@@ -238,9 +238,7 @@ def _pulse_sink(server):
 
 
 def _pulse_source(server):
-    code, stdout, stderr = _run(
-        ["/usr/bin/pactl", "--server", server, "list", "short", "sources"]
-    )
+    code, stdout, stderr = _run(["/usr/bin/pactl", "--server", server, "list", "short", "sources"])
     if code != 0:
         raise RequestError("cannot list PulseAudio sources: %s" % stderr.strip())
     if not isinstance(stdout, str):
