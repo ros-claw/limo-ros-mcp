@@ -1,6 +1,6 @@
 schema_version: limo.readiness-policy.v1
 policy_id: limo-patrol-default
-snapshot_ttl_sec: 5.0
+snapshot_ttl_sec: 10.0
 max_observation_skew_sec: 3.0
 critical_observations:
   - status
@@ -14,12 +14,14 @@ critical_observations:
   - diagnostics
   - tf
 thresholds:
-  # The Melodic LIMO driver stamp trails local receipt by roughly 0.7 s; the
-  # bounded concurrent evidence window adds up to ~1.7 s on the onboard ARM CPU.
   status_fresh_sec: 3.0
   odom_fresh_sec: 3.0
   imu_fresh_sec: 2.0
-  laser_fresh_sec: 2.5
+  # Live measurements on the onboard Jetson show the LIMO driver stamp trailing
+  # receipt by 1.4-2.2 s while /scan continues at 8.8 Hz. The coherent collector
+  # adds less than 2 s after the scan sample; retain a bounded margin without
+  # accepting a genuinely stalled lidar stream.
+  laser_fresh_sec: 4.0
   amcl_fresh_sec: 5.0
   navigation_fresh_sec: 5.0
   costmap_fresh_sec: 5.0

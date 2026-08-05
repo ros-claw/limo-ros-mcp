@@ -6,7 +6,7 @@ import json
 import time
 import tomllib
 from pathlib import Path
-from threading import Lock
+from threading import Event, Lock
 from types import SimpleNamespace
 from typing import Any
 
@@ -576,7 +576,7 @@ def test_rosbridge_readiness_collects_laser_through_bounded_roscli(
     assert result["observation_records"]["laser_scan"]["transport"] == ("local_roscli_read_only")
 
 
-def test_rosbridge_readiness_uses_fixed_slow_workers_then_one_batch(
+def test_rosbridge_readiness_warms_slow_workers_before_one_batch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class FakeRosbridgeClient:
@@ -599,6 +599,7 @@ def test_rosbridge_readiness_uses_fixed_slow_workers_then_one_batch(
         def subscribe_batch(self, topic_types: dict[str, str]) -> dict[str, dict[str, Any]]:
             self.batch_calls += 1
             assert topic_types == {"/limo_status": "limo_base/LimoStatus"}
+            assert slow_finished.wait(timeout=1.0)
             return {
                 "/limo_status": {
                     "message": {"battery_voltage": 12.0, "error_code": 0, "motion_mode": 1},
@@ -615,6 +616,7 @@ def test_rosbridge_readiness_uses_fixed_slow_workers_then_one_batch(
         ) -> list[dict[str, Any]]:
             assert count == 1
             if topic == "/scan":
+                slow_finished.set()
                 return [
                     {
                         "angle_min": -1.0,
@@ -626,6 +628,7 @@ def test_rosbridge_readiness_uses_fixed_slow_workers_then_one_batch(
                 ]
             return [{"info": {"resolution": 0.05, "width": 20, "height": 20}}]
 
+    slow_finished = Event()
     rosbridge = FakeRosbridgeClient()
     roscli = FakeRoscliClient()
     monkeypatch.setattr(
