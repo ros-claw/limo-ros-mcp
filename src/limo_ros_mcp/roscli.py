@@ -5,10 +5,13 @@ from __future__ import annotations
 import json
 import os
 import re
+import select
 import shutil
+import signal
 import subprocess
 import time
 import uuid
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
@@ -241,36 +244,66 @@ class RosCliReadOnlyClient:
         allowed = {("map", "odom"), ("odom", "base_link"), ("map", "base_link")}
         if (parent_frame, child_frame) not in allowed:
             raise ValueError("transform is not present in the immutable readiness allowlist")
-        # A fresh tf_echo process needs several seconds to fill its listener on
-        # the live Jetson, especially while readiness also samples ROS topics.
-        timeout_sec = max(0.2, min(self.timeout_sec, 5.0))
+        # A fresh tf_echo process needs time to fill its listener on the live
+        # Jetson. Read its fixed stdout stream until the first valid transform
+        # and stop the process group immediately instead of waiting out a timeout
+        # after evidence has already arrived.
+        timeout_sec = max(0.2, min(self.timeout_sec, 8.0))
         command = [
-            self.timeout_command,
-            "--signal=TERM",
-            f"{timeout_sec:g}",
             self.rosrun,
             "tf",
             "tf_echo",
             parent_frame,
             child_frame,
         ]
-        result = subprocess.run(
+        process = subprocess.Popen(
             command,
-            check=False,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
             text=True,
-            timeout=timeout_sec + 1.0,
+            bufsize=1,
             env=self._environment,
+            start_new_session=True,
         )
-        output = result.stdout
-        if len(output.encode("utf-8")) > self.max_output_bytes:
-            raise RuntimeError("ROS CLI output exceeds the configured size limit")
-        if result.returncode not in {0, 124}:
-            error = result.stderr.strip() or output.strip() or "tf_echo failed"
-            raise RuntimeError(error)
-        # ``tf_echo`` may print an initial lookup failure while its listener is
-        # filling, followed by one or more valid transforms.  Treat the latter
-        # as authoritative instead of rejecting the whole bounded transcript.
-        return bool(
-            re.search(r"^At time\s+\S+", output, flags=re.MULTILINE) and "- Translation:" in output
-        )
+        if process.stdout is None:  # pragma: no cover - PIPE guarantees stdout
+            raise RuntimeError("tf_echo stdout pipe is unavailable")
+        output: list[str] = []
+        output_size = 0
+        saw_timestamp = False
+        resolved = False
+        deadline = time.monotonic() + timeout_sec
+        try:
+            while time.monotonic() < deadline:
+                remaining = max(0.0, deadline - time.monotonic())
+                readable, _, _ = select.select([process.stdout], [], [], remaining)
+                if not readable:
+                    break
+                line = process.stdout.readline()
+                if not line:
+                    if process.poll() is not None:
+                        break
+                    continue
+                output.append(line)
+                output_size += len(line.encode("utf-8"))
+                if output_size > self.max_output_bytes:
+                    raise RuntimeError("ROS CLI output exceeds the configured size limit")
+                if re.match(r"^At time\s+\S+", line):
+                    saw_timestamp = True
+                elif saw_timestamp and "- Translation:" in line:
+                    resolved = True
+                    break
+        finally:
+            if process.poll() is None:
+                try:
+                    os.killpg(process.pid, signal.SIGTERM)
+                    process.wait(timeout=1.0)
+                except (ProcessLookupError, subprocess.TimeoutExpired):
+                    with suppress(ProcessLookupError):
+                        os.killpg(process.pid, signal.SIGKILL)
+                    process.wait(timeout=1.0)
+        if resolved:
+            return True
+        returncode = process.poll()
+        if returncode not in {0, -signal.SIGTERM, -signal.SIGKILL}:
+            raise RuntimeError("".join(output).strip() or "tf_echo failed")
+        return False
