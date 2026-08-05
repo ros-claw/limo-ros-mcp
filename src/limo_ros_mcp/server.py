@@ -635,6 +635,7 @@ class LimoMCPService:
             ]
             supplemental: RosCliReadOnlyClient | None = None
             tf_chain_resolved: bool | None = None
+            tf_resolution_error: Exception | None = None
             for observation in observations:
                 topic, expected_type = LIMO_OBSERVATION_TOPICS[observation]
                 observed_type = observed_types.get(topic)
@@ -750,13 +751,24 @@ class LimoMCPService:
                             try:
                                 tf_chain_resolved = tf_future.result()
                             except Exception as exc:  # noqa: BLE001 - preserve partial evidence
-                                failures["tf_resolution"] = {
-                                    "ok": False,
-                                    "observation": "tf_resolution",
-                                    "error_code": "LIMO_OBSERVATION_FAILED",
-                                    "error": str(exc),
-                                    "command_dispatched": False,
-                                }
+                                tf_resolution_error = exc
+                    # The first listener competes with two Python 2 ROS workers
+                    # during process startup on the Jetson. If it did not resolve,
+                    # retry once after those workers have exited; the second probe
+                    # remains fixed, read-only, and bounded by the same client.
+                    if resolve_tf and tf_chain_resolved is not True:
+                        try:
+                            tf_chain_resolved = supplemental.transform_available("map", "base_link")
+                        except Exception as exc:  # noqa: BLE001 - preserve partial evidence
+                            tf_resolution_error = exc
+                    if resolve_tf and tf_chain_resolved is not True and tf_resolution_error:
+                        failures["tf_resolution"] = {
+                            "ok": False,
+                            "observation": "tf_resolution",
+                            "error_code": "LIMO_OBSERVATION_FAILED",
+                            "error": str(tf_resolution_error),
+                            "command_dispatched": False,
+                        }
 
             subscribe_batch = getattr(client, "subscribe_batch", None)
             if candidate == "rosbridge" and available and callable(subscribe_batch):

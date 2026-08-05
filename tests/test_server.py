@@ -468,7 +468,7 @@ def test_rosbridge_readiness_uses_noarr_cli_summary_for_global_costmap(
     ]
 
 
-def test_rosbridge_readiness_supplements_critical_tf_edges(
+def test_rosbridge_readiness_retries_and_supplements_critical_tf_edges(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class FakeRosbridgeClient:
@@ -495,8 +495,13 @@ def test_rosbridge_readiness_supplements_critical_tf_edges(
     class FakeRoscliClient:
         transport_generation = "roscli-tf"
 
+        def __init__(self) -> None:
+            self.transform_calls = 0
+
         def transform_available(self, parent: str, child: str) -> bool:
-            return (parent, child) == ("map", "base_link")
+            assert (parent, child) == ("map", "base_link")
+            self.transform_calls += 1
+            return self.transform_calls == 2
 
     rosbridge = FakeRosbridgeClient()
     roscli = FakeRoscliClient()
@@ -521,6 +526,7 @@ def test_rosbridge_readiness_supplements_critical_tf_edges(
         for item in result["summaries"]["tf"]["transforms"]
     }
     assert ("map", "base_link") in edges
+    assert roscli.transform_calls == 2
 
 
 def test_rosbridge_readiness_collects_laser_through_bounded_roscli(
