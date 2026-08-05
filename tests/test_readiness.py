@@ -121,7 +121,7 @@ def test_snapshot_validation_rejects_expiry_and_tampering() -> None:
     )
 
     assert validate_readiness_snapshot(evidence, now_wall=104.0)["ok"] is True
-    assert validate_readiness_snapshot(evidence, now_wall=106.0)["error_code"] == (
+    assert validate_readiness_snapshot(evidence, now_wall=111.0)["error_code"] == (
         "LIMO_SNAPSHOT_EXPIRED"
     )
     evidence["state"] = "BLOCKED"

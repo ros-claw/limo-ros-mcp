@@ -604,6 +604,7 @@ class LimoMCPService:
         endpoint: str,
         timeout_sec: float,
         transport: str,
+        use_cache: bool = True,
     ) -> dict[str, Any]:
         """Collect independent topics concurrently and preserve partial evidence."""
 
@@ -652,12 +653,16 @@ class LimoMCPService:
                         "command_dispatched": False,
                     }
                 else:
-                    cached = self._observation_hub.cached(
-                        observation,
-                        transport=candidate,
-                        endpoint=endpoint,
-                        max_age_sec=OBSERVATION_MAX_AGE_SEC.get(observation, 0.5),
-                        cutoff_monotonic=cutoff_monotonic,
+                    cached = (
+                        self._observation_hub.cached(
+                            observation,
+                            transport=candidate,
+                            endpoint=endpoint,
+                            max_age_sec=OBSERVATION_MAX_AGE_SEC.get(observation, 0.5),
+                            cutoff_monotonic=cutoff_monotonic,
+                        )
+                        if use_cache
+                        else None
                     )
                     if cached is not None:
                         summaries[observation] = dict(cached["summary"])
@@ -685,29 +690,31 @@ class LimoMCPService:
                         }
                     )
 
-            # Fill the fixed TF listener first, then start both fixed Python 2
-            # samplers together. LaserScan remains on the ROS worker because
-            # non-finite no-return ranges are not reliable on rosbridge's JSON
-            # path. The remaining topics use one multiplexed connection below.
+            # Warm the fixed TF listener and Python 2 samplers together.  Once
+            # those startup-heavy reads complete, immediately take the fast
+            # rosbridge batch so every safety-critical receive timestamp stays
+            # within one coherent evidence window. LaserScan remains on the ROS
+            # worker because non-finite no-return ranges are not reliable on
+            # rosbridge's JSON path.
             if candidate == "rosbridge" and supplemental is not None:
-                if "tf" in available:
-                    try:
-                        tf_chain_resolved = supplemental.transform_available("map", "base_link")
-                    except Exception as exc:  # noqa: BLE001 - preserve partial evidence
-                        failures["tf_resolution"] = {
-                            "ok": False,
-                            "observation": "tf_resolution",
-                            "error_code": "LIMO_OBSERVATION_FAILED",
-                            "error": str(exc),
-                            "command_dispatched": False,
-                        }
                 slow_observations = [
                     name for name in ("global_costmap", "laser_scan") if name in available
                 ]
                 for observation in slow_observations:
                     available.remove(observation)
-                if slow_observations:
-                    with ThreadPoolExecutor(max_workers=len(slow_observations)) as executor:
+                resolve_tf = "tf" in available
+                worker_count = len(slow_observations) + int(resolve_tf)
+                if worker_count:
+                    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+                        tf_future = (
+                            executor.submit(
+                                supplemental.transform_available,
+                                "map",
+                                "base_link",
+                            )
+                            if resolve_tf
+                            else None
+                        )
                         slow_futures = {
                             executor.submit(
                                 self._observe_with_client,
@@ -739,6 +746,17 @@ class LimoMCPService:
                                 "transport": result.get("transport"),
                                 "transport_generation": result.get("transport_generation"),
                             }
+                        if tf_future is not None:
+                            try:
+                                tf_chain_resolved = tf_future.result()
+                            except Exception as exc:  # noqa: BLE001 - preserve partial evidence
+                                failures["tf_resolution"] = {
+                                    "ok": False,
+                                    "observation": "tf_resolution",
+                                    "error_code": "LIMO_OBSERVATION_FAILED",
+                                    "error": str(exc),
+                                    "command_dispatched": False,
+                                }
 
             subscribe_batch = getattr(client, "subscribe_batch", None)
             if candidate == "rosbridge" and available and callable(subscribe_batch):
@@ -1223,6 +1241,10 @@ class LimoMCPService:
             endpoint=endpoint,
             timeout_sec=timeout_sec,
             transport=transport,
+            # A motion-authorizing snapshot must be one freshly collected,
+            # coherent evidence window. Reusing individually fresh cache entries
+            # can make them stale while slower TF/costmap sampling completes.
+            use_cache=False,
         )
         receive_wall_times = [
             float(record["received_wall_time"])
