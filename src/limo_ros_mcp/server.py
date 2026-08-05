@@ -704,6 +704,48 @@ class LimoMCPService:
                 for observation in slow_observations:
                     available.remove(observation)
                 resolve_tf = "tf" in available
+
+                def collect_slow(
+                    executor: ThreadPoolExecutor,
+                    supplemental_client: RosCliReadOnlyClient,
+                    observation_names: tuple[str, ...],
+                    target_summaries: dict[str, dict[str, Any]],
+                    target_records: dict[str, dict[str, Any]],
+                    target_failures: dict[str, dict[str, Any]],
+                ) -> None:
+                    slow_futures = {
+                        executor.submit(
+                            self._observe_with_client,
+                            observation,
+                            client=supplemental_client,
+                            transport="local_roscli_read_only",
+                            include_raw=False,
+                        ): observation
+                        for observation in observation_names
+                    }
+                    for future in as_completed(slow_futures):
+                        observation = slow_futures[future]
+                        try:
+                            result = future.result()
+                        except Exception as exc:  # noqa: BLE001 - preserve partial evidence
+                            target_failures[observation] = {
+                                "ok": False,
+                                "observation": observation,
+                                "error_code": "LIMO_OBSERVATION_FAILED",
+                                "error": str(exc),
+                                "command_dispatched": False,
+                            }
+                            continue
+                        target_failures.pop(observation, None)
+                        target_summaries[observation] = result["summary"]
+                        target_records[observation] = {
+                            "summary": result["summary"],
+                            "received_wall_time": result.get("received_wall_time"),
+                            "received_monotonic": result.get("received_monotonic"),
+                            "transport": result.get("transport"),
+                            "transport_generation": result.get("transport_generation"),
+                        }
+
                 worker_count = len(slow_observations) + int(resolve_tf)
                 if worker_count:
                     with ThreadPoolExecutor(max_workers=worker_count) as executor:
@@ -716,37 +758,14 @@ class LimoMCPService:
                             if resolve_tf
                             else None
                         )
-                        slow_futures = {
-                            executor.submit(
-                                self._observe_with_client,
-                                observation,
-                                client=supplemental,
-                                transport="local_roscli_read_only",
-                                include_raw=False,
-                            ): observation
-                            for observation in slow_observations
-                        }
-                        for future in as_completed(slow_futures):
-                            observation = slow_futures[future]
-                            try:
-                                result = future.result()
-                            except Exception as exc:  # noqa: BLE001 - preserve partial evidence
-                                failures[observation] = {
-                                    "ok": False,
-                                    "observation": observation,
-                                    "error_code": "LIMO_OBSERVATION_FAILED",
-                                    "error": str(exc),
-                                    "command_dispatched": False,
-                                }
-                                continue
-                            summaries[observation] = result["summary"]
-                            records[observation] = {
-                                "summary": result["summary"],
-                                "received_wall_time": result.get("received_wall_time"),
-                                "received_monotonic": result.get("received_monotonic"),
-                                "transport": result.get("transport"),
-                                "transport_generation": result.get("transport_generation"),
-                            }
+                        collect_slow(
+                            executor,
+                            supplemental,
+                            tuple(slow_observations),
+                            summaries,
+                            records,
+                            failures,
+                        )
                         if tf_future is not None:
                             try:
                                 tf_chain_resolved = tf_future.result()
@@ -761,6 +780,22 @@ class LimoMCPService:
                             tf_chain_resolved = supplemental.transform_available("map", "base_link")
                         except Exception as exc:  # noqa: BLE001 - preserve partial evidence
                             tf_resolution_error = exc
+                        else:
+                            # A retry can outlive the first scan/costmap samples.
+                            # Refresh them only on this uncommon path so the final
+                            # motion-authorizing snapshot remains time-coherent.
+                            if tf_chain_resolved and slow_observations:
+                                with ThreadPoolExecutor(
+                                    max_workers=len(slow_observations)
+                                ) as executor:
+                                    collect_slow(
+                                        executor,
+                                        supplemental,
+                                        tuple(slow_observations),
+                                        summaries,
+                                        records,
+                                        failures,
+                                    )
                     if resolve_tf and tf_chain_resolved is not True and tf_resolution_error:
                         failures["tf_resolution"] = {
                             "ok": False,

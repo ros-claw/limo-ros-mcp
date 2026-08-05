@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import subprocess
 from typing import Any
 
@@ -69,17 +70,30 @@ def test_roscli_builds_melodic_environment_without_inherited_ros_vars(
 
 
 def test_transform_available_accepts_success_after_initial_failure(monkeypatch: Any) -> None:
-    def run(command: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
-        output = (
-            "Failure at 0.000\n"
-            "At time 12.3\n"
-            "- Translation: [0.0, 0.0, 0.0]\n"
-            "- Rotation: in Quaternion [0.0, 0.0, 0.0, 1.0]\n"
-        )
-        return subprocess.CompletedProcess(command, 124, stdout=output, stderr="")
+    class Process:
+        pid = 123
+
+        def __init__(self) -> None:
+            self.stdout = io.StringIO(
+                "Failure at 0.000\n"
+                "At time 12.3\n"
+                "- Translation: [0.0, 0.0, 0.0]\n"
+                "- Rotation: in Quaternion [0.0, 0.0, 0.0, 1.0]\n"
+            )
+            self.returncode: int | None = None
+
+        def poll(self) -> int | None:
+            return self.returncode
+
+        def wait(self, *, timeout: float) -> int:
+            del timeout
+            self.returncode = -15
+            return self.returncode
 
     monkeypatch.setattr("shutil.which", lambda name: f"/opt/ros/melodic/bin/{name}")
-    monkeypatch.setattr("subprocess.run", run)
+    monkeypatch.setattr("subprocess.Popen", lambda *_args, **_kwargs: Process())
+    monkeypatch.setattr("select.select", lambda values, *_args: (values, [], []))
+    monkeypatch.setattr("os.killpg", lambda *_args: None)
     client = RosCliReadOnlyClient({})
 
     assert client.transform_available("map", "odom") is True
@@ -167,21 +181,32 @@ def test_each_roscli_client_has_a_distinct_transport_generation(monkeypatch: Any
 def test_roscli_resolves_only_fixed_readiness_transforms(monkeypatch: Any) -> None:
     calls: list[list[str]] = []
 
-    def run(command: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+    class Process:
+        pid = 123
+
+        def __init__(self) -> None:
+            self.stdout = io.StringIO("At time 1.0\n- Translation: [0, 0, 0]\n")
+            self.returncode: int | None = None
+
+        def poll(self) -> int | None:
+            return self.returncode
+
+        def wait(self, *, timeout: float) -> int:
+            del timeout
+            self.returncode = -15
+            return self.returncode
+
+    def popen(command: list[str], **_kwargs: Any) -> Process:
         calls.append(command)
-        return subprocess.CompletedProcess(
-            command,
-            124,
-            stdout="At time 1.0\n- Translation: [0, 0, 0]\n",
-            stderr="",
-        )
+        return Process()
 
     monkeypatch.setattr("shutil.which", lambda name: f"/usr/bin/{name}")
-    monkeypatch.setattr("subprocess.run", run)
+    monkeypatch.setattr("subprocess.Popen", popen)
+    monkeypatch.setattr("select.select", lambda values, *_args: (values, [], []))
+    monkeypatch.setattr("os.killpg", lambda *_args: None)
     client = RosCliReadOnlyClient({"/tf": "tf2_msgs/TFMessage"})
 
     assert client.transform_available("map", "odom") is True
-    assert calls[0][2] == "5"
     assert calls[0][-4:] == ["tf", "tf_echo", "map", "odom"]
     try:
         client.transform_available("map", "camera_link")
