@@ -7,6 +7,22 @@ import os
 from pathlib import Path
 from typing import Any
 
+_PRIVATE_AUTHORIZATION_KEYS = frozenset({"approval_id", "permit_id", "permit"})
+
+
+def _public_control_result(value: Any) -> Any:
+    """Remove daemon-only authorization handles from public MCP results."""
+
+    if isinstance(value, dict):
+        return {
+            key: _public_control_result(item)
+            for key, item in value.items()
+            if key not in _PRIVATE_AUTHORIZATION_KEYS
+        }
+    if isinstance(value, list):
+        return [_public_control_result(item) for item in value]
+    return value
+
 
 class RosclawGateway:
     """Delegate all state-changing requests to rosclawd through ROSClaw."""
@@ -85,12 +101,14 @@ class RosclawGateway:
         )
 
     async def action_status(self, action_id: str) -> dict[str, Any]:
-        return self._result(await self._runtime().get_action_status(action_id))
+        result = self._result(await self._runtime().get_action_status(action_id))
+        return self._result(_public_control_result(result))
 
     async def execution_receipt(self, action_id: str) -> dict[str, Any]:
-        return self._result(
+        result = self._result(
             await asyncio.to_thread(self._daemon().get_execution_receipt, action_id)
         )
+        return self._result(_public_control_result(result))
 
     async def emergency_stop(self, reason: str) -> dict[str, Any]:
         return self._result(await self._runtime().emergency_stop(reason))
