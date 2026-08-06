@@ -498,6 +498,119 @@ def test_navigation_worker_classifies_already_satisfied_goal_and_motion() -> Non
     assert rotation < NAVIGATION.MIN_OBSERVED_ROTATION_RAD
 
 
+def _navigation_message(
+    x: float = 0.0, yaw: float = 0.0, linear: float = 0.0, angular: float = 0.0
+):
+    orientation = type(
+        "Quaternion",
+        (),
+        {"x": 0.0, "y": 0.0, "z": math.sin(yaw / 2.0), "w": math.cos(yaw / 2.0)},
+    )()
+    vector = lambda x_value=0.0, y_value=0.0, z_value=0.0: type(  # noqa: E731
+        "Vector", (), {"x": x_value, "y": y_value, "z": z_value}
+    )()
+    return type(
+        "Message",
+        (),
+        {
+            "header": type("Header", (), {"frame_id": "odom"})(),
+            "linear": vector(linear),
+            "angular": vector(z_value=angular),
+            "pose": type(
+                "PoseWithCovariance",
+                (),
+                {
+                    "pose": type(
+                        "Pose",
+                        (),
+                        {"position": vector(x), "orientation": orientation},
+                    )()
+                },
+            )(),
+            "twist": type(
+                "TwistWithCovariance",
+                (),
+                {
+                    "twist": type(
+                        "Twist",
+                        (),
+                        {"linear": vector(linear), "angular": vector(z_value=angular)},
+                    )()
+                },
+            )(),
+        },
+    )()
+
+
+def test_navigation_watchdog_detects_command_without_odometry_response() -> None:
+    before = {"frame_id": "odom", "x": 0.0, "y": 0.0, "yaw": 0.0}
+    watchdog = NAVIGATION.MotionWatchdog(before, grace_sec=3.0)
+
+    watchdog.observe_command(_navigation_message(angular=0.2), observed_at=10.0)
+    watchdog.observe_odometry(_navigation_message())
+
+    assert not watchdog.commanded_without_motion(observed_at=12.9)
+    assert watchdog.commanded_without_motion(observed_at=13.0)
+
+
+def test_navigation_watchdog_accepts_observed_odometry_motion() -> None:
+    before = {"frame_id": "odom", "x": 0.0, "y": 0.0, "yaw": 0.0}
+    watchdog = NAVIGATION.MotionWatchdog(before, grace_sec=3.0)
+
+    watchdog.observe_command(_navigation_message(linear=0.1), observed_at=10.0)
+    watchdog.observe_odometry(_navigation_message(x=0.03, linear=0.1))
+
+    assert not watchdog.commanded_without_motion(observed_at=20.0)
+
+
+def test_navigation_result_wait_honors_interrupt_flag(monkeypatch) -> None:
+    class FakeRospy:
+        class Duration:
+            def __init__(self, seconds: float) -> None:
+                self.seconds = seconds
+
+        @staticmethod
+        def is_shutdown() -> bool:
+            return False
+
+    class FakeServer:
+        @staticmethod
+        def wait_for_result(_duration) -> bool:
+            raise AssertionError("interrupt must be checked before blocking")
+
+    watchdog = type("Watchdog", (), {"commanded_without_motion": lambda self: False})()
+    monkeypatch.setattr(NAVIGATION, "_CANCEL_REQUESTED", True)
+
+    assert (
+        NAVIGATION._wait_for_navigation_result(FakeRospy(), FakeServer(), 30.0, watchdog)
+        == "interrupted"
+    )
+
+
+def test_navigation_result_wait_reports_no_motion(monkeypatch) -> None:
+    class FakeRospy:
+        class Duration:
+            def __init__(self, seconds: float) -> None:
+                self.seconds = seconds
+
+        @staticmethod
+        def is_shutdown() -> bool:
+            return False
+
+    class FakeServer:
+        @staticmethod
+        def wait_for_result(_duration) -> bool:
+            raise AssertionError("watchdog must be checked before blocking")
+
+    watchdog = type("Watchdog", (), {"commanded_without_motion": lambda self: True})()
+    monkeypatch.setattr(NAVIGATION, "_CANCEL_REQUESTED", False)
+
+    assert (
+        NAVIGATION._wait_for_navigation_result(FakeRospy(), FakeServer(), 30.0, watchdog)
+        == "no_motion"
+    )
+
+
 def test_navigation_worker_reads_active_trajectory_planner_tolerance() -> None:
     class FakeRospy:
         @staticmethod
