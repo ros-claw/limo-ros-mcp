@@ -10,7 +10,7 @@ import re
 import time
 from typing import Any
 
-from limo_ros_mcp.contract import MOTION_MODE_NAMES, decode_limo_error_code
+from limo_ros_mcp.contract import CONTROL_MODE_NAMES, MOTION_MODE_NAMES, decode_limo_error_code
 from limo_ros_mcp.readiness import evaluate_summaries
 from limo_ros_mcp.schemas import ReadinessEvidenceV1
 
@@ -138,11 +138,23 @@ def summarize_status(message: dict[str, Any]) -> dict[str, Any]:
         if isinstance(motion_mode_value, int) and not isinstance(motion_mode_value, bool)
         else None
     )
+    control_mode_value = message.get("control_mode")
+    control_mode = (
+        control_mode_value
+        if isinstance(control_mode_value, int) and not isinstance(control_mode_value, bool)
+        else None
+    )
     battery_voltage = _number(message.get("battery_voltage"))
     return {
         "header": _header_summary(message),
         "vehicle_state": message.get("vehicle_state"),
-        "control_mode": message.get("control_mode"),
+        "control_mode": control_mode,
+        "control_mode_name": (
+            CONTROL_MODE_NAMES.get(control_mode, "unrecognized")
+            if control_mode is not None
+            else "invalid"
+        ),
+        "control_mode_valid": control_mode in CONTROL_MODE_NAMES,
         "battery_voltage": battery_voltage,
         "battery_voltage_valid": battery_voltage is not None,
         "error_code": error_code,

@@ -195,6 +195,10 @@ LIMO_ERROR_FLAGS: dict[int, str] = {
     0x0100: "drive_status_error",
 }
 
+# AgileX protocol enum ``AgxControlMode``.  Keep the numeric value in MCP
+# responses too: it is the firmware-reported source of truth, while this label
+# prevents agents from guessing vendor-specific enum meanings.
+CONTROL_MODE_NAMES = {0: "standby", 1: "can", 2: "uart", 3: "rc"}
 MOTION_MODE_NAMES = {0: "four_wheel_differential", 1: "ackermann", 2: "mecanum", 255: "unknown"}
 
 LIMO_INTERFACE_CONTRACT: dict[str, Any] = {

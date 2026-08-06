@@ -88,22 +88,37 @@ def test_status_decodes_motion_mode_and_driver_error_bits() -> None:
     )
 
     assert summary["motion_mode_name"] == "four_wheel_differential"
+    assert summary["control_mode_name"] == "can"
+    assert summary["control_mode_valid"] is True
     assert summary["error_flags"] == ["battery_low", "motor_driver_1_error"]
     assert summary["healthy"] is False
 
 
 def test_non_finite_status_values_are_not_silently_coerced_to_zero() -> None:
     summary = summarize_status(
-        {"battery_voltage": float("nan"), "error_code": "0", "motion_mode": False}
+        {
+            "battery_voltage": float("nan"),
+            "control_mode": False,
+            "error_code": "0",
+            "motion_mode": False,
+        }
     )
 
     assert summary["battery_voltage"] is None
     assert summary["battery_voltage_valid"] is False
     assert summary["error_code"] is None
     assert summary["error_code_valid"] is False
+    assert summary["control_mode"] is None
+    assert summary["control_mode_name"] == "invalid"
+    assert summary["control_mode_valid"] is False
     assert summary["motion_mode"] is None
     assert summary["motion_mode_valid"] is False
     assert summary["healthy"] is False
+
+
+def test_status_decodes_uart_and_rc_control_modes() -> None:
+    assert summarize_status({"control_mode": 2})["control_mode_name"] == "uart"
+    assert summarize_status({"control_mode": 3})["control_mode_name"] == "rc"
 
 
 def test_odometry_extracts_pose_yaw_and_velocity() -> None:

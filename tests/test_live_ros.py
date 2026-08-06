@@ -44,6 +44,8 @@ def test_live_status_message_decodes_driver_fields() -> None:
 
     assert result["ok"] is True
     assert result["message_type"] == "limo_base/LimoStatus"
+    assert result["summary"]["control_mode_name"] in {"standby", "can", "uart", "rc"}
+    assert result["summary"]["control_mode_valid"] is True
     assert result["summary"]["motion_mode"] in {0, 1, 2, 255}
     assert isinstance(result["summary"]["error_flags"], list)
     assert result["command_dispatched"] is False
