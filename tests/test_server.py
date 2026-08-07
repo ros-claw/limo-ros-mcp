@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import socket
+import subprocess
+import sys
 import time
 import tomllib
 from pathlib import Path
@@ -32,7 +34,7 @@ def test_mcp_process_status_exposes_bounded_restart_evidence() -> None:
 
     assert result["schema_version"] == "limo.mcp-process.v1"
     assert result["server_name"] == "rosclaw-limo"
-    assert result["package_version"] == "0.10.1"
+    assert result["package_version"] == "0.10.2"
     assert isinstance(result["distribution_version"], str)
     assert isinstance(result["installation_metadata_matches_source"], bool)
     assert isinstance(result["pid"], int)
@@ -113,6 +115,23 @@ def test_package_and_manifest_versions_match() -> None:
 
     assert manifest["version"] == project["project"]["version"]
     assert manifest["mcp_tool_count"] == 35
+
+
+def test_source_launcher_bootstraps_src_layout_without_console_script() -> None:
+    root = Path(__file__).parents[1]
+
+    result = subprocess.run(
+        [sys.executable, str(root / "limo-ros-mcp"), "--help"],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        timeout=15.0,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "ROSClaw AgileX LIMO MCP server" in result.stdout
+    assert "--profile {core,inspection,full}" in result.stdout
 
 
 def test_dabai_camera_contract_uses_live_astra_topics() -> None:

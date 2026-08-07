@@ -99,6 +99,11 @@ approvals_reviewer = "user"
 
 Read-only, SHADOW, and MCP protocol tests do not require a new Codex session. Whether an already-running client hot-reloads a changed tool schema depends on the client version.
 
+Version 0.10.2 adds the repository-root `limo-ros-mcp` launcher used by source-based
+ROSClaw installs. It bootstraps the `src` layout directly, so an installer may reuse a
+ROSClaw-owned Python runtime with `--no-install-deps` without first creating a console-script
+shim in that runtime. The installed checkout and its locked Git revision remain authoritative.
+
 Version 0.8.7 corrects physical-effect evidence from the first LIMO lab run. Speaker
 volume now uses one PCM amplitude control against a temporary reference output gain,
 instead of multiplying a very low PulseAudio/ALSA gain by another waveform attenuation;
