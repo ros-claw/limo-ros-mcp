@@ -1,6 +1,6 @@
 # limo-ros-mcp
 
-AgileX LIMO ROS 1 的独立巡检 MCP 服务。默认 `core` profile 只暴露 10 个有界工具；`inspection` 和 `full` profile 提供完整的 ROS、RGB-D、音频、显示与 Jetson 接口。会改变机器人状态的请求仍全部交给 ROSClaw 守护进程。
+AgileX LIMO ROS 1 的独立巡检 MCP 服务。默认 `full` profile 暴露全部 35 个 ROS、RGB-D、音频、显示、Jetson 与受控控制面工具；需要更小工具面时可显式选择包含 11 个工具的 `core` profile。会改变机器人状态的请求仍全部交给 ROSClaw 守护进程。
 
 本次真机接口验证、动态状态和巡检前置问题记录在
 [`docs/ROS_INSPECTION_READINESS.md`](docs/ROS_INSPECTION_READINESS.md)。
@@ -30,7 +30,7 @@ USB、音频、显示、触摸屏、相机健康与 Jetson 证据边界详见
 
 ## 工具
 
-默认 `core` 包含 `limo_get_context`、`limo_observe`、`limo_get_readiness`、导航验证、三个受控请求、动作状态、回执和急停。使用 `--profile inspection` 获取全部只读诊断，或用 `--profile full` 获取完整工具面。
+默认 `full` 暴露下表完整的 35 个工具。使用 `--profile inspection` 获取全部只读诊断，或显式使用 `--profile core` 获取包含上下文、观测、readiness、导航验证、三个受控请求、动作状态、回执和急停的 11 工具界面。也可通过 `ROSCLAW_LIMO_MCP_PROFILE` 环境变量选择相同的 profile。
 
 | 分组 | 工具 |
 | --- | --- |

@@ -1,6 +1,6 @@
 # limo-ros-mcp
 
-Inspection-focused MCP server for the AgileX LIMO ROS 1 platform. The default `core` profile exposes 10 bounded tools; `inspection` and `full` expose the detailed ROS, RGB-D, audio, display, and Jetson surfaces. State-changing requests remain delegated to the ROSClaw daemon.
+Inspection-focused MCP server for the AgileX LIMO ROS 1 platform. The default `full` profile exposes all 35 ROS, RGB-D, audio, display, Jetson, and guarded control-plane tools. Use the explicit `core` profile for an 11-tool bounded surface. State-changing requests remain delegated to the ROSClaw daemon.
 
 The ROSClaw embodiment assets live in `e-urdf-zoo/limo`, with the project template and ROS embodiment card under `configs/`.
 
@@ -30,9 +30,11 @@ The USB, audio, display, touchscreen, camera-health, and Jetson evidence contrac
 
 ## MCP tools
 
-The default `core` profile contains `limo_get_context`, `limo_observe`, `limo_get_readiness`,
-navigation validation, three guarded requests, status, receipt, and emergency stop. Use
-`--profile inspection` for all read-only diagnostics or `--profile full` for the complete surface.
+The default `full` profile exposes the complete 35-tool surface listed below. Use
+`--profile inspection` for read-only diagnostics or explicitly select `--profile core` for
+the 11-tool surface containing context, observation, readiness, navigation validation,
+three guarded requests, status, receipt, and emergency stop. The
+`ROSCLAW_LIMO_MCP_PROFILE` environment variable can select the same profiles.
 
 | Group | Tools |
 | --- | --- |
