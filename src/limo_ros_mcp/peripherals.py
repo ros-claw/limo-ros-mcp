@@ -22,6 +22,10 @@ from limo_ros_mcp.roscli import build_ros1_cli_environment
 TextRunner = Callable[[list[str], float], tuple[int, str, str]]
 BinaryRunner = Callable[[list[str], float], tuple[int, bytes, str]]
 
+ALLOWED_PULSE_SERVER = "unix:/run/rosclaw/pulse/native"
+PULSE_USB_SINK_PREFIX = "alsa_output.usb-0c76_USB_PnP_Audio_Device-"
+PULSE_USB_SOURCE_PREFIX = "alsa_input.usb-0c76_USB_PnP_Audio_Device-"
+
 USB_PERIPHERALS: tuple[dict[str, Any], ...] = (
     {
         "id": "dabai_color_camera",
@@ -315,6 +319,76 @@ class PeripheralInspector:
             "channel_count": len(matches),
         }
 
+    @staticmethod
+    def _configured_pulse_server() -> str | None:
+        configured = os.environ.get("ROSCLAW_LIMO_PULSE_SERVER", "").strip()
+        return configured if configured == ALLOWED_PULSE_SERVER else None
+
+    def _pulse_endpoints(self) -> dict[str, Any] | None:
+        server = self._configured_pulse_server()
+        if server is None:
+            return None
+        endpoints: dict[str, str] = {}
+        for kind, prefix in (
+            ("sink", PULSE_USB_SINK_PREFIX),
+            ("source", PULSE_USB_SOURCE_PREFIX),
+        ):
+            try:
+                code, stdout, _stderr = self._text_runner(
+                    ["/usr/bin/pactl", "--server", server, "list", "short", f"{kind}s"],
+                    3.0,
+                )
+            except (OSError, subprocess.SubprocessError):
+                return None
+            if code != 0:
+                return None
+            names = [
+                columns[1]
+                for line in stdout.splitlines()
+                if len(columns := line.split()) >= 2
+                and columns[1].startswith(prefix)
+                and not columns[1].endswith(".monitor")
+            ]
+            if len(names) != 1:
+                return None
+            endpoints[kind] = names[0]
+        return {"server": server, **endpoints}
+
+    def _pulse_endpoint_state(self, *, server: str, kind: str, name: str) -> dict[str, Any]:
+        try:
+            code, stdout, stderr = self._text_runner(
+                ["/usr/bin/pactl", "--server", server, "list", f"{kind}s"], 3.0
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            return {"available": False, "error": str(exc)}
+        if code != 0:
+            return {"available": False, "error": stderr.strip() or stdout.strip()}
+        header = "Sink" if kind == "sink" else "Source"
+        sections = re.split(rf"(?m)^{header} #\d+\s*$", stdout)
+        section = next(
+            (
+                candidate
+                for candidate in sections
+                if re.search(rf"(?m)^\s*Name:\s*{re.escape(name)}\s*$", candidate)
+            ),
+            "",
+        )
+        if not section:
+            return {"available": False, "error": "PulseAudio endpoint details are unavailable."}
+        mute_match = re.search(r"(?m)^\s*Mute:\s*(yes|no)\s*$", section)
+        volume_line = next(
+            (line for line in section.splitlines() if line.strip().startswith("Volume:")), ""
+        )
+        volumes = [int(value) for value in re.findall(r"(\d+)%", volume_line)]
+        return {
+            "available": True,
+            "transport": "pulseaudio",
+            "endpoint": name,
+            "volume_percent": round(sum(volumes) / len(volumes), 1) if volumes else None,
+            "muted": mute_match.group(1) == "yes" if mute_match else None,
+            "channel_count": len(volumes),
+        }
+
     def audio_state(self) -> dict[str, Any]:
         card = self._usb_audio_card()
         if card is None:
@@ -332,15 +406,33 @@ class PeripheralInspector:
         capture_ready = any(
             line.startswith(card_prefix) and "capture" in line for line in pcm.splitlines()
         )
-        speaker = self._mixer_state(card, "Speaker", "Playback")
-        microphone = self._mixer_state(card, "Mic", "Capture")
+        pulse = self._pulse_endpoints()
+        if pulse is None:
+            speaker = self._mixer_state(card, "Speaker", "Playback")
+            microphone = self._mixer_state(card, "Mic", "Capture")
+            audio_transport = "alsa"
+        else:
+            speaker = self._pulse_endpoint_state(
+                server=pulse["server"], kind="sink", name=pulse["sink"]
+            )
+            microphone = self._pulse_endpoint_state(
+                server=pulse["server"], kind="source", name=pulse["source"]
+            )
+            audio_transport = "pulseaudio"
         return {
-            "ok": playback_ready and capture_ready,
+            "ok": (
+                playback_ready
+                and capture_ready
+                and bool(speaker.get("available"))
+                and bool(microphone.get("available"))
+            ),
             "schema_version": "limo.audio-state.v1",
             "alsa_card": card,
             "alsa_device": f"plughw:{card},0",
             "playback_ready": playback_ready,
             "capture_ready": capture_ready,
+            "audio_transport": audio_transport,
+            "pulse_server": pulse["server"] if pulse is not None else None,
             "speaker": speaker,
             "microphone": microphone,
             "physical_amplifier_interface": False,
@@ -368,24 +460,49 @@ class PeripheralInspector:
                 "error_code": "LIMO_AUDIO_DEVICE_UNAVAILABLE",
                 "command_dispatched": False,
             }
-        command = [
-            "arecord",
-            "-q",
-            "-D",
-            f"plughw:{card},0",
-            "-f",
-            "S16_LE",
-            "-r",
-            str(sample_rate_hz),
-            "-c",
-            "1",
-            "-t",
-            "raw",
-            "-d",
-            str(duration_sec),
-        ]
+        pulse = self._pulse_endpoints()
+        if pulse is None:
+            command = [
+                "arecord",
+                "-q",
+                "-D",
+                f"plughw:{card},0",
+                "-f",
+                "S16_LE",
+                "-r",
+                str(sample_rate_hz),
+                "-c",
+                "1",
+                "-t",
+                "raw",
+                "-d",
+                str(duration_sec),
+            ]
+            capture_transport = "alsa"
+            capture_device = f"plughw:{card},0"
+            accepted_codes = {0}
+        else:
+            command = [
+                "/usr/bin/timeout",
+                "--signal=TERM",
+                str(duration_sec + 3.0),
+                "/usr/bin/parec",
+                "--server",
+                pulse["server"],
+                "--device",
+                pulse["source"],
+                "--client-name",
+                "rosclaw-limo-microphone-level",
+                "--format=s16le",
+                f"--rate={sample_rate_hz}",
+                "--channels=1",
+                "--raw",
+            ]
+            capture_transport = "pulseaudio"
+            capture_device = pulse["source"]
+            accepted_codes = {0, 124}
         try:
-            code, payload, stderr = self._binary_runner(command, float(duration_sec + 3))
+            code, payload, stderr = self._binary_runner(command, float(duration_sec + 5))
         except (OSError, subprocess.SubprocessError) as exc:
             return {
                 "ok": False,
@@ -393,15 +510,16 @@ class PeripheralInspector:
                 "error": str(exc),
                 "command_dispatched": False,
             }
-        if code != 0:
+        if code not in accepted_codes:
             return {
                 "ok": False,
                 "error_code": "LIMO_MICROPHONE_CAPTURE_FAILED",
                 "error": stderr.strip(),
                 "command_dispatched": False,
             }
+        expected_bytes = duration_sec * sample_rate_hz * 2
         samples = array.array("h")
-        samples.frombytes(payload[: len(payload) - len(payload) % 2])
+        samples.frombytes(payload[: min(len(payload) - len(payload) % 2, expected_bytes)])
         if sys.byteorder != "little":
             samples.byteswap()
         if not samples:
@@ -417,6 +535,8 @@ class PeripheralInspector:
             "ok": True,
             "schema_version": "limo.microphone-level.v1",
             "alsa_card": card,
+            "capture_transport": capture_transport,
+            "capture_device": capture_device,
             "duration_sec": duration_sec,
             "sample_rate_hz": sample_rate_hz,
             "sample_count": len(samples),
