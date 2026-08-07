@@ -1,5 +1,9 @@
 #!/usr/bin/env python2
+# mypy: ignore-errors
 """Keep the fixed Dabai color stream subscribed for one parent mission process."""
+
+# This subprocess must remain valid Python 2 for ROS Melodic.  Its narrow JSON
+# protocol and behavior are covered by the modern-Python parent tests instead.
 
 import json
 import sys

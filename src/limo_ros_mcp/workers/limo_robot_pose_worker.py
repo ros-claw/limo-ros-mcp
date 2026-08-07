@@ -1,5 +1,9 @@
 #!/usr/bin/env python2
+# mypy: ignore-errors
 """Look up the fixed map-to-base transform without exposing arbitrary TF access."""
+
+# This subprocess must remain valid Python 2 for ROS Melodic.  Its narrow JSON
+# protocol and behavior are covered by the modern-Python parent tests instead.
 
 import json
 import math

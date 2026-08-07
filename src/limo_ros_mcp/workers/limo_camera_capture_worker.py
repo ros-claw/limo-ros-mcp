@@ -1,10 +1,14 @@
 #!/usr/bin/env python2
+# mypy: ignore-errors
 """Capture one allowlisted ROS image as a bounded PNG.
 
 This helper is intentionally Python 2 compatible because ROS Melodic's rospy and
 cv_bridge bindings are installed for Python 2 on the LIMO image.  It has no ROS
 publisher and accepts no arbitrary topic, command, or output path.
 """
+
+# This subprocess must remain valid Python 2 for ROS Melodic.  Its narrow JSON
+# protocol and behavior are covered by the modern-Python parent tests instead.
 
 import base64
 import hashlib

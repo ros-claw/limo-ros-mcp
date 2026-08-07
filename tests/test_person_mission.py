@@ -15,6 +15,8 @@ from scripts.limo_find_person_greet import (
     angle_normalize,
     normalize_body_snapshot_hash,
     parse_json_object,
+    parse_pulse_source_inventory,
+    record_pulse_response,
     transcribe_google,
     validate_detection,
 )
@@ -93,6 +95,54 @@ def test_audio_metrics_detect_response_energy(tmp_path: pytest.TempPathFactory) 
 
     assert metrics["duration_sec"] == 1.0
     assert metrics["speech_energy_detected"] is True
+
+
+def test_pulse_source_inventory_selects_only_usb_microphone() -> None:
+    inventory = (
+        "1\talsa_output.usb-0c76_USB_PnP_Audio_Device-00.analog-stereo.monitor\tmodule\n"
+        "2\talsa_input.usb-0c76_USB_PnP_Audio_Device-00.analog-stereo\tmodule\n"
+        "3\talsa_input.platform-sound.analog-stereo\tmodule\n"
+    )
+
+    assert parse_pulse_source_inventory(inventory) == (
+        "alsa_input.usb-0c76_USB_PnP_Audio_Device-00.analog-stereo"
+    )
+
+
+def test_response_capture_retries_truncated_pulse_audio(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    full_pcm = b"\x01\x00" * 16000
+    captures = iter([b"\x00\x00" * 100, full_pcm])
+    monkeypatch.setattr(
+        "scripts.limo_find_person_greet.pulse_response_source", lambda: "allowlisted-source"
+    )
+    monkeypatch.setattr(
+        "scripts.limo_find_person_greet._capture_pulse_pcm",
+        lambda _source, _duration: next(captures),
+    )
+    path = tmp_path / "response.wav"
+
+    record_pulse_response(path, duration_sec=1.0)
+
+    metrics = analyze_wav(path)
+    assert metrics["duration_sec"] == 1.0
+    assert metrics["sample_count"] == 16000
+
+
+def test_response_capture_rejects_two_truncated_attempts(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(
+        "scripts.limo_find_person_greet.pulse_response_source", lambda: "allowlisted-source"
+    )
+    monkeypatch.setattr(
+        "scripts.limo_find_person_greet._capture_pulse_pcm",
+        lambda _source, _duration: b"\x00\x00" * 100,
+    )
+
+    with pytest.raises(RuntimeError, match="truncated"):
+        record_pulse_response(tmp_path / "response.wav", duration_sec=1.0)
 
 
 def test_angle_helpers_cross_pi_boundary() -> None:

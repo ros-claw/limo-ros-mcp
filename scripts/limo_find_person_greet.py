@@ -44,6 +44,15 @@ WHISPER_CLI = WHISPER_ROOT / "build/bin/main"
 WHISPER_MODEL = WHISPER_ROOT / "models/ggml-tiny.bin"
 CAMERA_KEEPALIVE = ROOT / "src/limo_ros_mcp/workers/limo_camera_keepalive_worker.py"
 ACTION_CONFIRMATION_WINDOW_SEC = 15 * 60
+PULSE_SERVER = "unix:/run/rosclaw/pulse/native"
+PULSE_SOURCE_PATTERN = re.compile(
+    r"^alsa_input\.usb-[A-Za-z0-9_.:-]*USB_PnP_(?:Audio|Sound)_Device"
+    r"[A-Za-z0-9_.:-]*\.analog-stereo$"
+)
+RESPONSE_SAMPLE_RATE_HZ = 16000
+RESPONSE_DURATION_SEC = 8.0
+RESPONSE_MIN_DURATION_RATIO = 0.75
+RESPONSE_CAPTURE_ATTEMPTS = 2
 
 
 def action_deadline(*, now: datetime | None = None) -> str:
@@ -150,6 +159,98 @@ def analyze_wav(path: Path) -> dict[str, Any]:
         "sha256": f"sha256:{hashlib.sha256(path.read_bytes()).hexdigest()}",
         "speech_energy_detected": dbfs(rms) >= -48.0 and dbfs(float(peak)) >= -32.0,
     }
+
+
+def parse_pulse_source_inventory(inventory: str) -> str:
+    """Select exactly one fixed USB microphone from a pactl inventory."""
+
+    matches = []
+    for line in inventory.splitlines():
+        fields = line.split()
+        if len(fields) >= 2 and PULSE_SOURCE_PATTERN.fullmatch(fields[1]):
+            matches.append(fields[1])
+    if len(matches) != 1:
+        raise RuntimeError("expected exactly one allowlisted USB PnP PulseAudio source")
+    return matches[0]
+
+
+def pulse_response_source() -> str:
+    listed = subprocess.run(
+        ["/usr/bin/pactl", "--server", PULSE_SERVER, "list", "short", "sources"],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+    if listed.returncode != 0:
+        raise RuntimeError("cannot list the fixed PulseAudio microphone source")
+    return parse_pulse_source_inventory(listed.stdout)
+
+
+def _capture_pulse_pcm(source: str, duration_sec: float) -> bytes:
+    """Drain parec while it records so its stdout pipe cannot stall the capture."""
+
+    recorder = subprocess.Popen(
+        [
+            "/usr/bin/parec",
+            "--server",
+            PULSE_SERVER,
+            "--device",
+            source,
+            "--client-name",
+            "rosclaw-limo-person-mission",
+            "--stream-name",
+            "bounded-response-capture",
+            "--format=s16le",
+            f"--rate={RESPONSE_SAMPLE_RATE_HZ}",
+            "--channels=1",
+            "--latency-msec=20",
+            "--process-time-msec=20",
+            "--raw",
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    try:
+        stdout, stderr = recorder.communicate(timeout=duration_sec)
+    except subprocess.TimeoutExpired:
+        recorder.terminate()
+        try:
+            stdout, stderr = recorder.communicate(timeout=2)
+        except subprocess.TimeoutExpired:
+            recorder.kill()
+            stdout, stderr = recorder.communicate(timeout=2)
+    if recorder.returncode not in {0, -15}:
+        detail = stderr.decode("utf-8", "replace").strip()
+        raise RuntimeError(f"PulseAudio response capture failed: {detail or 'unknown error'}")
+    return stdout
+
+
+def record_pulse_response(path: Path, duration_sec: float = RESPONSE_DURATION_SEC) -> None:
+    """Retain a complete bounded mono WAV, retrying one truncated Pulse capture."""
+
+    if not 1.0 <= duration_sec <= RESPONSE_DURATION_SEC:
+        raise ValueError(f"duration_sec must be within [1.0, {RESPONSE_DURATION_SEC}]")
+    source = pulse_response_source()
+    expected_bytes = int(RESPONSE_SAMPLE_RATE_HZ * 2 * duration_sec)
+    minimum_bytes = int(expected_bytes * RESPONSE_MIN_DURATION_RATIO)
+    received = 0
+    for _attempt in range(RESPONSE_CAPTURE_ATTEMPTS):
+        pcm = _capture_pulse_pcm(source, duration_sec)
+        received = len(pcm)
+        if received < minimum_bytes:
+            continue
+        with wave.open(str(path), "wb") as writer:
+            writer.setnchannels(1)
+            writer.setsampwidth(2)
+            writer.setframerate(RESPONSE_SAMPLE_RATE_HZ)
+            writer.writeframes(pcm[:expected_bytes])
+        return
+    received_sec = received / float(RESPONSE_SAMPLE_RATE_HZ * 2)
+    raise RuntimeError(
+        f"PulseAudio response capture was truncated ({received_sec:.2f}s after "
+        f"{RESPONSE_CAPTURE_ATTEMPTS} attempts)"
+    )
 
 
 def transcribe_local(path: Path) -> dict[str, Any]:
@@ -451,34 +552,9 @@ class Mission:
         audio, _ = await self.call("limo_get_audio_state", {})
         if audio.get("capture_ready") is not True:
             raise RuntimeError("microphone is not capture-ready")
-        device = str(audio.get("alsa_device"))
-        if not re.fullmatch(r"plughw:\d+,0", device):
-            raise RuntimeError("unexpected microphone device")
         await asyncio.sleep(0.8)
         wav_path = self.run_dir / f"response_{attempt}.wav"
-        recorded = await asyncio.to_thread(
-            subprocess.run,
-            [
-                "/usr/bin/arecord",
-                "-q",
-                "-D",
-                device,
-                "-f",
-                "S16_LE",
-                "-c",
-                "1",
-                "-r",
-                "16000",
-                "-d",
-                "8",
-                str(wav_path),
-            ],
-            check=False,
-            capture_output=True,
-            timeout=12,
-        )
-        if recorded.returncode != 0 or not wav_path.is_file():
-            raise RuntimeError("arecord failed to retain the response")
+        await asyncio.to_thread(record_pulse_response, wav_path)
         metrics = analyze_wav(wav_path)
         local = await asyncio.to_thread(transcribe_local, wav_path)
         google = (
