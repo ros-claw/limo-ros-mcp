@@ -206,6 +206,19 @@ def _pose_from_odometry(message):
     }
 
 
+def _final_pose_evidence(map_to_base_after, amcl_after):
+    """Use the stopped TF chain as final pose and retain AMCL as auxiliary evidence.
+
+    AMCL is event-driven and its last post-dispatch message can precede the end
+    of a turn. The live map->base_link TF incorporates the subsequent odometry
+    delta and is the same global pose chain consumed by move_base.
+    """
+
+    observed = _pose_from_transform(map_to_base_after[0], map_to_base_after[1])
+    auxiliary_amcl = _pose_from_amcl(amcl_after) if amcl_after is not None else None
+    return observed, "tf_map_to_base", auxiliary_amcl
+
+
 def _pose_error(observed, target):
     position_error = math.hypot(observed["x"] - target["x"], observed["y"] - target["y"])
     yaw_delta = observed["yaw"] - target["yaw"]
@@ -444,12 +457,9 @@ def _run_ros(request):
             min(0.5, request["verification_timeout_sec"]),
         )
         map_to_base_after = listener.lookupTransform("map", "base_link", rospy.Time(0))
-        if amcl_after is not None:
-            observed = _pose_from_amcl(amcl_after)
-            observed_source = "amcl_pose"
-        else:
-            observed = _pose_from_transform(map_to_base_after[0], map_to_base_after[1])
-            observed_source = "tf_map_to_base"
+        observed, observed_source, auxiliary_amcl = _final_pose_evidence(
+            map_to_base_after, amcl_after
+        )
         position_error, yaw_error = _pose_error(observed, pose)
         map_translation, map_rotation = _pose_delta(
             map_pose_before, _pose_from_transform(map_to_base_after[0], map_to_base_after[1])
@@ -503,6 +513,7 @@ def _run_ros(request):
             "observed_final_pose": observed,
             "observed_final_pose_source": observed_source,
             "amcl_pose_observed_after_dispatch": amcl_after is not None,
+            "post_dispatch_amcl_pose": auxiliary_amcl,
             "position_error_m": position_error,
             "yaw_error_rad": yaw_error,
             "stopped_odometry": {
