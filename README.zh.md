@@ -74,6 +74,10 @@ approvals_reviewer = "user"
 普通只读、SHADOW 和 MCP 协议测试不需要新开 Codex 会话；已运行会话是否会
 热更新工具 schema 取决于客户端版本。
 
+0.10.2 新增仓库根目录的 `limo-ros-mcp` source launcher。ROSClaw 从源码安装时可
+复用已经包含 ROSClaw 的 Python，并使用 `--no-install-deps`，不再要求先向该运行环境
+写入 console-script shim；实际执行代码仍来自安装器锁定 SHA 的 checkout。
+
 `limo_get_runtime_status` 会返回 `mcp_process` 与 `interaction_plane`。更新代码后，
 如果 `mcp_process.restart_required=true`，说明常驻 MCP 进程仍在执行旧代码；如果
 `interaction_plane.daemon_restart_required=true`，说明当前 rosclawd 尚未加载 Operator
