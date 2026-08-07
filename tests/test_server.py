@@ -403,6 +403,16 @@ def test_readiness_collection_reuses_preflighted_transport_and_aggregates_tf(
 def test_rosbridge_readiness_bounds_tf_sampling_window(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    class FakeSupplementalClient:
+        transport_generation = "roscli-summary"
+
+        def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+            pass
+
+        def transform_available(self, parent: str, child: str) -> bool:
+            assert (parent, child) == ("map", "base_link")
+            return True
+
     class FakeRosbridgeClient:
         transport_generation = "rosbridge-shared"
 
@@ -435,6 +445,7 @@ def test_rosbridge_readiness_bounds_tf_sampling_window(
         "_client",
         staticmethod(lambda *_args, **_kwargs: client),
     )
+    monkeypatch.setattr("limo_ros_mcp.server.RosCliReadOnlyClient", FakeSupplementalClient)
 
     result = LimoMCPService(gateway=object())._collect_summaries(
         ["tf"],
