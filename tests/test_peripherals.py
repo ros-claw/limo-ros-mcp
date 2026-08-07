@@ -142,6 +142,76 @@ def test_microphone_level_returns_statistics_without_audio_content(tmp_path: Pat
     assert result["command_dispatched"] is False
 
 
+def test_audio_and_microphone_use_allowlisted_pulse_bridge(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    proc_root = tmp_path / "proc"
+    _write(
+        proc_root / "asound" / "cards",
+        " 2 [Device         ]: USB-Audio - USB PnP Audio Device\n",
+    )
+    _write(
+        proc_root / "asound" / "pcm",
+        "02-00: USB Audio : USB Audio : playback 1 : capture 1\n",
+    )
+    sink = "alsa_output.usb-0c76_USB_PnP_Audio_Device-00.analog-stereo"
+    source = "alsa_input.usb-0c76_USB_PnP_Audio_Device-00.analog-stereo"
+    monkeypatch.setenv("ROSCLAW_LIMO_PULSE_SERVER", "unix:/run/rosclaw/pulse/native")
+
+    def text_runner(command: list[str], _timeout_sec: float) -> tuple[int, str, str]:
+        if command[-3:] == ["list", "short", "sinks"]:
+            return 0, f"1\t{sink}\tmodule-alsa-card.c\ts16le 2ch 48000Hz\n", ""
+        if command[-3:] == ["list", "short", "sources"]:
+            return 0, f"2\t{source}\tmodule-alsa-card.c\ts16le 2ch 48000Hz\n", ""
+        if command[-2:] == ["list", "sinks"]:
+            return (
+                0,
+                f"Sink #1\n\tName: {sink}\n\tMute: no\n"
+                "\tVolume: front-left: 11796 / 18% / -44.68 dB, "
+                "front-right: 11796 / 18% / -44.68 dB\n",
+                "",
+            )
+        if command[-2:] == ["list", "sources"]:
+            return (
+                0,
+                f"Source #2\n\tName: {source}\n\tMute: no\n"
+                "\tVolume: front-left: 65536 / 100% / 0.00 dB, "
+                "front-right: 65536 / 100% / 0.00 dB\n",
+                "",
+            )
+        return 1, "", "unexpected command"
+
+    samples = array.array("h", [1200, -1200] * 10_000).tobytes()
+
+    def binary_runner(command: list[str], _timeout_sec: float) -> tuple[int, bytes, str]:
+        assert command[0] == "/usr/bin/timeout"
+        assert command[3] == "/usr/bin/parec"
+        assert source in command
+        return 124, samples, ""
+
+    inspector = PeripheralInspector(
+        sys_root=tmp_path / "sys",
+        proc_root=proc_root,
+        dev_root=tmp_path / "dev",
+        text_runner=text_runner,
+        binary_runner=binary_runner,
+    )
+
+    state = inspector.audio_state()
+    level = inspector.microphone_level(duration_sec=1, sample_rate_hz=16000)
+
+    assert state["ok"] is True
+    assert state["audio_transport"] == "pulseaudio"
+    assert state["speaker"]["available"] is True
+    assert state["speaker"]["volume_percent"] == 18.0
+    assert state["microphone"]["available"] is True
+    assert level["ok"] is True
+    assert level["capture_transport"] == "pulseaudio"
+    assert level["capture_device"] == source
+    assert level["sample_count"] == 16000
+    assert level["audio_retained"] is False
+
+
 @pytest.mark.parametrize(
     ("duration_sec", "sample_rate_hz"),
     [(0, 16000), (4, 16000), (True, 16000), (1, 44100)],

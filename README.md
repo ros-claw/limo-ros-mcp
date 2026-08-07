@@ -104,6 +104,11 @@ ROSClaw installs. It bootstraps the `src` layout directly, so an installer may r
 ROSClaw-owned Python runtime with `--no-install-deps` without first creating a console-script
 shim in that runtime. The installed checkout and its locked Git revision remain authoritative.
 
+Version 0.10.3 makes read-only audio inspection and bounded microphone-level
+measurement use the allowlisted PulseAudio bridge when the isolated MCP account
+cannot open the ALSA control device directly. The raw in-memory capture remains
+bounded and is discarded immediately after level analysis.
+
 Version 0.8.7 corrects physical-effect evidence from the first LIMO lab run. Speaker
 volume now uses one PCM amplitude control against a temporary reference output gain,
 instead of multiplying a very low PulseAudio/ALSA gain by another waveform attenuation;

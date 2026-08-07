@@ -78,6 +78,10 @@ approvals_reviewer = "user"
 复用已经包含 ROSClaw 的 Python，并使用 `--no-install-deps`，不再要求先向该运行环境
 写入 console-script shim；实际执行代码仍来自安装器锁定 SHA 的 checkout。
 
+0.10.3 让只读音频状态和有界麦克风电平测量在隔离 MCP 账户不能直接打开 ALSA
+控制设备时，改用受白名单约束的 PulseAudio 桥。原始录音仍只在内存中有界采集，
+完成电平分析后立即丢弃。
+
 `limo_get_runtime_status` 会返回 `mcp_process` 与 `interaction_plane`。更新代码后，
 如果 `mcp_process.restart_required=true`，说明常驻 MCP 进程仍在执行旧代码；如果
 `interaction_plane.daemon_restart_required=true`，说明当前 rosclawd 尚未加载 Operator
