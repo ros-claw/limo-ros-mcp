@@ -32,7 +32,7 @@ def test_mcp_process_status_exposes_bounded_restart_evidence() -> None:
 
     assert result["schema_version"] == "limo.mcp-process.v1"
     assert result["server_name"] == "rosclaw-limo"
-    assert result["package_version"] == "0.10.0"
+    assert result["package_version"] == "0.10.1"
     assert isinstance(result["distribution_version"], str)
     assert isinstance(result["installation_metadata_matches_source"], bool)
     assert isinstance(result["pid"], int)
@@ -112,7 +112,7 @@ def test_package_and_manifest_versions_match() -> None:
     project = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
 
     assert manifest["version"] == project["project"]["version"]
-    assert manifest["mcp_tool_count"] == 34
+    assert manifest["mcp_tool_count"] == 35
 
 
 def test_dabai_camera_contract_uses_live_astra_topics() -> None:

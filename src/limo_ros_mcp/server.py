@@ -2631,7 +2631,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--profile",
         choices=["core", "inspection", "full"],
-        default=os.environ.get("ROSCLAW_LIMO_MCP_PROFILE", "core"),
+        default=os.environ.get("ROSCLAW_LIMO_MCP_PROFILE", "full"),
     )
     parser.add_argument(
         "--compat-tools",
