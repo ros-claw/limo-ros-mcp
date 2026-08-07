@@ -14,6 +14,13 @@ def _digest(data: bytes) -> str:
     return f"sha256:{hashlib.sha256(data).hexdigest()}"
 
 
+def test_live_policy_default_matches_limo_trajectory_planner() -> None:
+    policy = load_patrol_map_policy()
+
+    assert policy.default_xy_m == 0.2
+    assert policy.default_yaw_rad >= 0.15
+
+
 def _policy_file(tmp_path: Path, *, no_go: list[list[list[float]]] | None = None) -> Path:
     map_yaml = b"image: map.pgm\nresolution: 1.0\norigin: [0, 0, 0]\n"
     pixels = bytes([254] * 49)

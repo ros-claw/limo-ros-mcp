@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import socket
 import time
 import tomllib
 from pathlib import Path
@@ -15,7 +16,11 @@ import pytest
 from limo_ros_mcp.contract import LIMO_OBSERVATION_TOPICS
 from limo_ros_mcp.evidence import seal_snapshot
 from limo_ros_mcp.rosbridge import validate_rosbridge_endpoint
-from limo_ros_mcp.runtime_info import interaction_plane_status, mcp_process_status
+from limo_ros_mcp.runtime_info import (
+    _operatord_socket_ready,
+    interaction_plane_status,
+    mcp_process_status,
+)
 from limo_ros_mcp.server import (
     LimoMCPService,
     build_mcp_server,
@@ -39,21 +44,55 @@ def test_mcp_process_status_exposes_bounded_restart_evidence() -> None:
 
 
 def test_interaction_plane_reports_stale_and_current_daemons() -> None:
-    stale = interaction_plane_status({"running": True})
+    stale = interaction_plane_status({"running": True}, operator_socket_ready=True)
     current = interaction_plane_status(
-        {"running": True, "operator_proposals": {"pending": 0, "total": 0}}
+        {"running": True, "operator_proposals": {"pending": 0, "total": 0}},
+        operator_socket_ready=True,
+    )
+    stopped_operatord = interaction_plane_status(
+        {"running": True, "operator_proposals": {"pending": 0, "total": 0}},
+        operator_socket_ready=False,
     )
 
     assert stale["operator_broker_available"] is False
     assert stale["real_confirmation_ready"] is False
     assert stale["daemon_restart_required"] is True
     assert current["operator_broker_available"] is True
+    assert current["operatord_available"] is True
     assert current["real_confirmation_ready"] is True
     assert current["daemon_restart_required"] is False
+    assert current["operatord_start_required"] is False
+    assert stopped_operatord["operator_broker_available"] is True
+    assert stopped_operatord["operatord_available"] is False
+    assert stopped_operatord["real_confirmation_ready"] is False
+    assert stopped_operatord["daemon_restart_required"] is False
+    assert stopped_operatord["operatord_start_required"] is True
+
+
+def test_operatord_socket_probe_rejects_a_stale_socket_file(tmp_path: Path) -> None:
+    stale = tmp_path / "stale.sock"
+    stale_server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    stale_server.bind(str(stale))
+    stale_server.close()
+
+    assert _operatord_socket_ready(stale) is False
+
+    live = tmp_path / "live.sock"
+    live_server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        live_server.bind(str(live))
+        live_server.listen(1)
+        assert _operatord_socket_ready(live) is True
+    finally:
+        live_server.close()
 
 
 @pytest.mark.asyncio
-async def test_runtime_status_includes_mcp_and_interaction_provenance() -> None:
+async def test_runtime_status_includes_mcp_and_interaction_provenance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("limo_ros_mcp.runtime_info._operatord_socket_ready", lambda: True)
+
     class RuntimeGateway:
         async def runtime_status(self) -> dict[str, Any]:
             return {
@@ -125,6 +164,7 @@ async def test_server_exposes_no_raw_ros_publish_tool() -> None:
         "limo_get_readiness",
         "limo_get_platform_health",
         "limo_get_runtime_status",
+        "limo_get_robot_pose",
         "limo_get_topic_info",
         "limo_get_transform_state",
         "limo_list_peripherals",
@@ -157,6 +197,7 @@ async def test_server_exposes_no_raw_ros_publish_tool() -> None:
         "limo_get_map_summary",
         "limo_get_diagnostics",
         "limo_get_transform_state",
+        "limo_get_robot_pose",
     }:
         assert schemas[name]["properties"]["timeout_sec"]["default"] == 5.0
     assert schemas["limo_get_patrol_readiness"]["properties"]["timeout_sec"]["default"] == 10.0
@@ -403,7 +444,11 @@ def test_rosbridge_readiness_bounds_tf_sampling_window(
     )
 
     assert result["ok"] is True
-    assert result["summaries"]["tf"]["transform_count"] == 2
+    assert result["summaries"]["tf"]["transform_count"] == 3
+    assert {
+        (item["parent_frame"], item["child_frame"])
+        for item in result["summaries"]["tf"]["transforms"]
+    } == {("map", "odom"), ("odom", "base_link"), ("map", "base_link")}
 
 
 def test_rosbridge_readiness_uses_noarr_cli_summary_for_global_costmap(

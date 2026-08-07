@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import os
 import re
@@ -18,6 +20,8 @@ from typing import Any
 import yaml
 
 _READINESS_WORKER_PROTOCOL = "rosclaw.limo.readiness-worker.v1"
+_CAMERA_WORKER_PROTOCOL = "rosclaw.limo.camera-capture-worker.v1"
+_ROBOT_POSE_WORKER_PROTOCOL = "rosclaw.limo.robot-pose-worker.v1"
 _READINESS_WORKER_TOPICS = {
     ("/move_base/global_costmap/costmap", "nav_msgs/OccupancyGrid"): "global_costmap",
     ("/scan", "sensor_msgs/LaserScan"): "laser_scan",
@@ -88,6 +92,12 @@ class RosCliReadOnlyClient:
         self.python2 = shutil.which("python2")
         self.readiness_worker = (
             Path(__file__).resolve().parents[2] / "worker" / "limo_readiness_worker.py"
+        )
+        self.camera_worker = (
+            Path(__file__).resolve().parent / "workers" / "limo_camera_capture_worker.py"
+        )
+        self.robot_pose_worker = (
+            Path(__file__).resolve().parent / "workers" / "limo_robot_pose_worker.py"
         )
 
     def _run(self, command: list[str]) -> str:
@@ -237,6 +247,98 @@ class RosCliReadOnlyClient:
 
     def subscribe_once(self, topic: str, message_type: str) -> dict[str, Any]:
         return self.subscribe_many(topic, message_type, count=1)[0]
+
+    def capture_camera_frame(
+        self,
+        *,
+        stream: str,
+        max_dimension: int,
+    ) -> tuple[dict[str, Any], bytes]:
+        """Capture one fixed camera stream through the bundled Python 2 ROS helper."""
+
+        if stream not in {"color", "infrared"}:
+            raise ValueError("stream must be color or infrared")
+        if not self.python2 or not self.camera_worker.is_file():
+            raise RuntimeError("bounded ROS camera capture worker is unavailable")
+        request = {
+            "protocol": _CAMERA_WORKER_PROTOCOL,
+            "stream": stream,
+            "timeout_sec": self.timeout_sec,
+            "max_dimension": max_dimension,
+        }
+        result = subprocess.run(
+            [self.python2, str(self.camera_worker)],
+            check=False,
+            capture_output=True,
+            text=True,
+            input=json.dumps(request, separators=(",", ":")),
+            timeout=self.timeout_sec + 3.0,
+            env=self._environment,
+        )
+        if len(result.stdout.encode("utf-8")) > 6_000_000:
+            raise RuntimeError("ROS camera worker output exceeds the configured size limit")
+        try:
+            response = json.loads(result.stdout)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError("ROS camera worker returned invalid JSON") from exc
+        if (
+            result.returncode != 0
+            or not isinstance(response, dict)
+            or response.get("protocol") != _CAMERA_WORKER_PROTOCOL
+            or response.get("stream") != stream
+            or response.get("ok") is not True
+        ):
+            error = response.get("error") if isinstance(response, dict) else None
+            raise RuntimeError(str(error or result.stderr.strip() or "ROS camera worker failed"))
+        try:
+            png = base64.b64decode(str(response.pop("png_base64")), validate=True)
+        except (ValueError, TypeError) as exc:
+            raise RuntimeError("ROS camera worker returned invalid PNG base64") from exc
+        if not png.startswith(b"\x89PNG\r\n\x1a\n") or len(png) > 4_000_000:
+            raise RuntimeError("ROS camera worker returned an invalid or oversized PNG")
+        expected_hash = f"sha256:{hashlib.sha256(png).hexdigest()}"
+        if response.get("png_sha256") != expected_hash:
+            raise RuntimeError("ROS camera worker PNG hash mismatch")
+        metadata = {key: value for key, value in response.items() if key not in {"ok", "protocol"}}
+        return metadata, png
+
+    def robot_pose(self) -> dict[str, Any]:
+        """Return the current fixed map-to-base_link transform."""
+
+        if not self.python2 or not self.robot_pose_worker.is_file():
+            raise RuntimeError("bounded ROS robot pose worker is unavailable")
+        request = {
+            "protocol": _ROBOT_POSE_WORKER_PROTOCOL,
+            "timeout_sec": min(self.timeout_sec, 5.0),
+        }
+        result = subprocess.run(
+            [self.python2, str(self.robot_pose_worker)],
+            check=False,
+            capture_output=True,
+            text=True,
+            input=json.dumps(request, separators=(",", ":")),
+            timeout=min(self.timeout_sec, 5.0) + 2.0,
+            env=self._environment,
+        )
+        if len(result.stdout.encode("utf-8")) > 65536:
+            raise RuntimeError("ROS robot pose worker output exceeds the configured size limit")
+        try:
+            response = json.loads(result.stdout)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError("ROS robot pose worker returned invalid JSON") from exc
+        if (
+            result.returncode != 0
+            or not isinstance(response, dict)
+            or response.get("ok") is not True
+            or response.get("protocol") != _ROBOT_POSE_WORKER_PROTOCOL
+            or response.get("parent_frame") != "map"
+            or response.get("child_frame") != "base_link"
+        ):
+            error = response.get("error") if isinstance(response, dict) else None
+            raise RuntimeError(
+                str(error or result.stderr.strip() or "ROS robot pose worker failed")
+            )
+        return {key: value for key, value in response.items() if key not in {"ok", "protocol"}}
 
     def transform_available(self, parent_frame: str, child_frame: str) -> bool:
         """Resolve one fixed TF edge without publishing or exposing an arbitrary command."""

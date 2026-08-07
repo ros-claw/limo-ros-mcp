@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import io
+import json
 import subprocess
 from typing import Any
 
@@ -267,3 +270,79 @@ def test_readiness_worker_rejects_mismatched_response(monkeypatch: Any) -> None:
         client.subscribe_many(
             "/move_base/global_costmap/costmap", "nav_msgs/OccupancyGrid", count=1
         )
+
+
+def test_roscli_camera_capture_uses_fixed_read_only_worker(monkeypatch: Any) -> None:
+    calls: list[tuple[list[str], dict[str, Any]]] = []
+    png = b"\x89PNG\r\n\x1a\nfixture"
+
+    def run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        calls.append((command, kwargs))
+        request = json.loads(kwargs["input"])
+        assert request == {
+            "protocol": "rosclaw.limo.camera-capture-worker.v1",
+            "stream": "color",
+            "timeout_sec": 5.0,
+            "max_dimension": 640,
+        }
+        response = {
+            "ok": True,
+            "protocol": "rosclaw.limo.camera-capture-worker.v1",
+            "stream": "color",
+            "topic": "/camera/color/image_raw",
+            "source_width": 640,
+            "source_height": 480,
+            "output_width": 640,
+            "output_height": 480,
+            "png_sha256": f"sha256:{hashlib.sha256(png).hexdigest()}",
+            "png_base64": base64.b64encode(png).decode(),
+        }
+        return subprocess.CompletedProcess(command, 0, stdout=json.dumps(response), stderr="")
+
+    monkeypatch.setattr("shutil.which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr("subprocess.run", run)
+    monkeypatch.setattr("limo_ros_mcp.roscli.Path.is_file", lambda _path: True)
+    client = RosCliReadOnlyClient({})
+
+    metadata, observed_png = client.capture_camera_frame(stream="color", max_dimension=640)
+
+    assert observed_png == png
+    assert metadata["topic"] == "/camera/color/image_raw"
+    assert "png_base64" not in metadata
+    command, kwargs = calls[0]
+    assert command[0] == "/usr/bin/python2"
+    assert command[1].endswith("workers/limo_camera_capture_worker.py")
+    assert kwargs["timeout"] == 8.0
+
+
+def test_roscli_robot_pose_uses_fixed_map_base_worker(monkeypatch: Any) -> None:
+    calls: list[tuple[list[str], dict[str, Any]]] = []
+
+    def run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        calls.append((command, kwargs))
+        assert json.loads(kwargs["input"]) == {
+            "protocol": "rosclaw.limo.robot-pose-worker.v1",
+            "timeout_sec": 5.0,
+        }
+        response = {
+            "ok": True,
+            "protocol": "rosclaw.limo.robot-pose-worker.v1",
+            "parent_frame": "map",
+            "child_frame": "base_link",
+            "translation": {"x": 0.1, "y": -0.2, "z": 0.0},
+            "rotation": {"x": 0.0, "y": 0.0, "z": 0.0, "w": 1.0, "yaw_rad": 0.0},
+            "received_wall_time": 123.0,
+        }
+        return subprocess.CompletedProcess(command, 0, stdout=json.dumps(response), stderr="")
+
+    monkeypatch.setattr("shutil.which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr("subprocess.run", run)
+    monkeypatch.setattr("limo_ros_mcp.roscli.Path.is_file", lambda _path: True)
+    client = RosCliReadOnlyClient({})
+
+    pose = client.robot_pose()
+
+    assert pose["parent_frame"] == "map"
+    assert pose["child_frame"] == "base_link"
+    assert pose["translation"]["x"] == 0.1
+    assert calls[0][0][1].endswith("workers/limo_robot_pose_worker.py")

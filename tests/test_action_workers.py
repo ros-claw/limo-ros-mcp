@@ -625,6 +625,24 @@ def test_navigation_worker_reads_active_trajectory_planner_tolerance() -> None:
     assert tolerance == {"xy_m": 0.2, "yaw_rad": 0.15}
 
 
+def test_navigation_worker_rejects_tighter_contract_than_active_planner() -> None:
+    with pytest.raises(
+        NAVIGATION.RequestError,
+        match="active TrajectoryPlannerROS goal tolerance exceeds approved",
+    ):
+        NAVIGATION._require_compatible_goal_tolerance(
+            {"xy_m": 0.15, "yaw_rad": 0.2},
+            {"xy_m": 0.2, "yaw_rad": 0.15},
+        )
+
+
+def test_navigation_worker_accepts_compatible_contract() -> None:
+    NAVIGATION._require_compatible_goal_tolerance(
+        {"xy_m": 0.2, "yaw_rad": 0.2},
+        {"xy_m": 0.2, "yaw_rad": 0.15},
+    )
+
+
 @pytest.mark.parametrize(
     ("worker", "payload"),
     [

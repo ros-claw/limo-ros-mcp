@@ -12,6 +12,9 @@ USB、音频、显示、触摸屏、相机健康与 Jetson 证据边界详见
 - 27 个具名 ROS 观测契约覆盖 LIMO 驱动、AMCL、move_base、地图/costmap、诊断、TF、日志，以及 Dabai 彩色、深度、红外、点云和标定流。
 - 只读外设工具会将手册中的外设与 USB、ALSA、framebuffer、触摸屏、温度、内存和磁盘真机证据交叉核验。
 - `limo_measure_microphone` 只在内存中采集 1–3 秒，返回 RMS/峰值后立即丢弃样本，不保存或返回音频内容。
+- `limo_capture_camera_frame` 优先使用 loopback rosbridge；原始 RGB 大消息在老旧
+  rosbridge 上阻塞时，自动回退到随包固定的只读 ROS 1 helper。回退同样不发布话题、
+  不接受任意 topic 或输出路径，只返回经过尺寸、字节数与 SHA-256 校验的单帧 PNG。
 - `limo_observe` 默认返回紧凑摘要；消息级调试时可显式设置 `include_raw=true`。
 - `limo_sample_topic` 可采样 1-10 条消息，返回摘要和估算频率。
 - 图像、点云、路径、激光数组和占用栅格默认只返回适合模型处理的统计量。
@@ -34,7 +37,7 @@ USB、音频、显示、触摸屏、相机健康与 Jetson 证据边界详见
 | 契约与 ROS graph | `limo_get_contract`、`limo_list_observations`、`limo_probe_ros`、`limo_get_topic_info` |
 | 消息检查 | `limo_observe`、`limo_sample_topic` |
 | 巡检快照 | `limo_get_base_state`、`limo_get_laser_summary`、`limo_get_localization_state`、`limo_get_navigation_state`、`limo_get_map_summary`、`limo_get_diagnostics`、`limo_get_transform_state`、`limo_get_patrol_readiness` |
-| 相机与外设 | `limo_get_camera_state`、`limo_capture_camera_frame`、`limo_get_dabai_device_state`、`limo_list_peripherals`、`limo_get_audio_state`、`limo_measure_microphone`、`limo_get_display_state`、`limo_get_platform_health` |
+| 相机与外设 | `limo_get_camera_state`、`limo_capture_camera_frame`、`limo_get_robot_pose`、`limo_get_dabai_device_state`、`limo_list_peripherals`、`limo_get_audio_state`、`limo_measure_microphone`、`limo_get_display_state`、`limo_get_platform_health` |
 | 参数验证 | `limo_validate_navigation_goal`、`limo_validate_velocity_command` |
 | ROSClaw 控制面 | `limo_get_runtime_status`、`limo_request_navigation`、`limo_request_initial_pose`、`limo_request_tone`、`limo_request_speech`、`limo_get_action_status`、`limo_get_execution_receipt`、`limo_emergency_stop` |
 
@@ -116,6 +119,10 @@ roslaunch rosbridge_server rosbridge_websocket.launch port:=9090
 worker 不经过 shell，直接调用本机 eSpeak-NG 库，在内存中把 PCM 归一化到 10–25% 音量，
 仅通过白名单 USB 扬声器播放，用车载麦克风验证声能增益，立即丢弃采样并恢复原混音状态。
 该闭环证明声学输出，不声称识别或验证了具体语义内容。
+
+`scripts/limo_find_person_greet.py` 默认仅使用本地 Whisper 转写。只有操作员显式传入
+`--cloud-asr` 时才会发送录音；此时还必须在受保护的进程环境中设置
+`ROSCLAW_LIMO_GOOGLE_SPEECH_API_KEY`。密钥不得写入脚本、配置仓库、MCP 参数或执行回执。
 
 ## 上游来源
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import socket
 import uuid
 from datetime import UTC, datetime
 from importlib.metadata import PackageNotFoundError, version
@@ -86,15 +87,46 @@ def mcp_process_status() -> dict[str, Any]:
     }
 
 
-def interaction_plane_status(runtime: dict[str, Any]) -> dict[str, Any]:
-    """Describe whether the connected daemon exposes the Operator Broker RPCs."""
+def _operatord_socket_ready(path: Path | None = None) -> bool:
+    """Return whether operatord is accepting connections, not merely leaving a socket file."""
+
+    socket_path = (
+        path
+        or Path(os.environ.get("ROSCLAW_HOME", str(Path.home() / ".rosclaw")))
+        / "run"
+        / "operatord.sock"
+    )
+    client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    client.settimeout(0.2)
+    try:
+        client.connect(str(socket_path))
+    except OSError:
+        return False
+    finally:
+        client.close()
+    return True
+
+
+def interaction_plane_status(
+    runtime: dict[str, Any], *, operator_socket_ready: bool | None = None
+) -> dict[str, Any]:
+    """Describe whether both rosclawd and live operatord confirmation RPCs are available."""
 
     broker = runtime.get("operator_proposals")
     broker_available = isinstance(broker, dict)
     daemon_running = runtime.get("running") is True
+    operatord_available = (
+        _operatord_socket_ready() if operator_socket_ready is None else operator_socket_ready
+    )
     restart_required = daemon_running and not broker_available
-    if broker_available:
-        reason = "The connected daemon exposes the Operator Broker control plane."
+    operatord_start_required = daemon_running and broker_available and not operatord_available
+    if broker_available and operatord_available:
+        reason = "rosclawd and the live operatord confirmation channel are available."
+    elif broker_available and daemon_running:
+        reason = (
+            "rosclawd exposes Operator Broker RPCs, but operatord is not accepting "
+            "connections; start operatord before requesting a REAL action."
+        )
     elif daemon_running:
         reason = (
             "The running daemon predates the Operator Broker; restart rosclawd from the "
@@ -105,8 +137,10 @@ def interaction_plane_status(runtime: dict[str, Any]) -> dict[str, Any]:
     return {
         "schema_version": "limo.interaction-plane.v1",
         "operator_broker_available": broker_available,
-        "real_confirmation_ready": daemon_running and broker_available,
+        "operatord_available": operatord_available,
+        "real_confirmation_ready": daemon_running and broker_available and operatord_available,
         "daemon_restart_required": restart_required,
+        "operatord_start_required": operatord_start_required,
         "reason": reason,
         "operator_proposals": broker if broker_available else None,
     }

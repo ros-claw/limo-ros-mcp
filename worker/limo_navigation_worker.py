@@ -242,6 +242,15 @@ def _active_goal_tolerance(rospy, requested):
     return {"xy_m": xy, "yaw_rad": yaw}
 
 
+def _require_compatible_goal_tolerance(requested, active):
+    """Reject contracts the active planner is not configured to satisfy."""
+
+    if active["xy_m"] > requested["xy_m"] or active["yaw_rad"] > requested["yaw_rad"]:
+        raise RequestError(
+            "active TrajectoryPlannerROS goal tolerance exceeds approved verification tolerance"
+        )
+
+
 def _wait_for_stopped_odometry(rospy, odometry_type, timeout_sec):
     deadline = time.time() + timeout_sec
     last = None
@@ -367,6 +376,7 @@ def _run_ros(request):
         initial_position_error, initial_yaw_error = _pose_error(map_pose_before, pose)
         active_tolerance = _active_goal_tolerance(rospy, request["goal_tolerance"])
         requested_tolerance = request["goal_tolerance"]
+        _require_compatible_goal_tolerance(requested_tolerance, active_tolerance)
         goal_already_satisfied = (
             initial_position_error <= active_tolerance["xy_m"]
             and initial_yaw_error <= active_tolerance["yaw_rad"]
