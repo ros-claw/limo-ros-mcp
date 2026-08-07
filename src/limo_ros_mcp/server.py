@@ -1054,6 +1054,33 @@ class LimoMCPService:
             transport=transport,
         )
 
+    def robot_pose(self, timeout_sec: float = 5.0) -> dict[str, Any]:
+        """Read the current fixed map-to-base_link transform through ROS Melodic."""
+
+        timeout_sec = self._validate_timeout(timeout_sec)
+        try:
+            client = RosCliReadOnlyClient(
+                dict(LIMO_OBSERVATION_TOPICS.values()), timeout_sec=timeout_sec
+            )
+            pose = client.robot_pose()
+        except Exception as exc:  # noqa: BLE001 - structured read-only boundary
+            return {
+                "ok": False,
+                "error_code": "LIMO_ROBOT_POSE_UNAVAILABLE",
+                "error": str(exc),
+                "command_dispatched": False,
+            }
+        return {
+            "ok": True,
+            "schema_version": "limo.robot_pose.v1",
+            "transport": "local_ros_tf_worker",
+            "transport_generation": client.transport_generation,
+            "trust_level": "LIVE_ROS_TF_LOOKUP",
+            "command_dispatched": False,
+            "usable_for_real_execution": False,
+            **pose,
+        }
+
     def camera_state(
         self,
         endpoint: str = "ws://127.0.0.1:9090",
@@ -1178,18 +1205,49 @@ class LimoMCPService:
             client = self._observation_hub.client("rosbridge", endpoint, timeout_sec)
             message = client.subscribe_once(topic, message_type)
             encoded = encode_ros_image_png(message, max_dimension=max_dimension)
-        except Exception as exc:  # noqa: BLE001 - return an honest MCP observation failure
+        except Exception as rosbridge_exc:  # noqa: BLE001 - use fixed read-only fallback
+            try:
+                fallback = RosCliReadOnlyClient(
+                    dict(LIMO_OBSERVATION_TOPICS.values()),
+                    timeout_sec=timeout_sec,
+                )
+                worker_metadata, png = fallback.capture_camera_frame(
+                    stream=str(stream).lower(),
+                    max_dimension=max_dimension,
+                )
+            except Exception as fallback_exc:  # noqa: BLE001 - report both transport failures
+                return (
+                    {
+                        "ok": False,
+                        "observation": observation,
+                        "topic": topic,
+                        "error_code": "LIMO_CAMERA_FRAME_UNAVAILABLE",
+                        "errors": {
+                            "rosbridge": str(rosbridge_exc),
+                            "local_ros_camera_worker": str(fallback_exc),
+                        },
+                        "transport": "unavailable",
+                        "command_dispatched": False,
+                    },
+                    None,
+                )
             return (
                 {
-                    "ok": False,
+                    "ok": True,
                     "observation": observation,
                     "topic": topic,
-                    "error_code": "LIMO_CAMERA_FRAME_UNAVAILABLE",
-                    "error": str(exc),
-                    "transport": "rosbridge",
+                    "message_type": message_type,
+                    "transport": "local_ros_camera_worker",
+                    "transport_generation": fallback.transport_generation,
+                    "fallback_from": "rosbridge",
+                    "fallback_reason": str(rosbridge_exc),
+                    "trust_level": "LIVE_ROS_CAMERA_FRAME",
                     "command_dispatched": False,
+                    "usable_for_real_execution": False,
+                    "schema_version": "limo.camera_frame.v1",
+                    **worker_metadata,
                 },
-                None,
+                png,
             )
         metadata = {
             "ok": True,
@@ -2116,6 +2174,10 @@ def build_mcp_server(
         return await asyncio.to_thread(
             implementation.transform_state, endpoint, timeout_sec, transport
         )
+
+    @mcp.tool(description="Read the current fixed map-to-base_link robot pose from live TF.")
+    async def limo_get_robot_pose(timeout_sec: float = 5.0) -> dict[str, Any]:
+        return await asyncio.to_thread(implementation.robot_pose, timeout_sec)
 
     @mcp.tool(
         description=(

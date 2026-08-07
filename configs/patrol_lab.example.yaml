@@ -22,7 +22,9 @@ geofence:
     - [-49.5, 49.0]
 no_go_zones: []
 goal_tolerance:
-  default_xy_m: 0.15
+  # Match the live TrajectoryPlannerROS stopping tolerance. A tighter MCP
+  # contract can make move_base succeed while post-verification fails.
+  default_xy_m: 0.20
   default_yaw_rad: 0.20
   min_xy_m: 0.05
   max_xy_m: 0.50

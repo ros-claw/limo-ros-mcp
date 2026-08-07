@@ -55,6 +55,7 @@ packages = ["src/limo_ros_mcp"]
 [tool.hatch.build.targets.sdist]
 include = [
   "/src",
+  "/scripts",
   "/tests",
   "/configs",
   "/e-urdf-zoo",
@@ -87,6 +88,6 @@ ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src"]
+pythonpath = ["src", "."]
 asyncio_mode = "auto"
 markers = ["live_ros: read-only tests against an operator-started LIMO ROS 1 graph"]

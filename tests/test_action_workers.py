@@ -486,6 +486,44 @@ def test_navigation_worker_builds_map_pose_from_live_tf() -> None:
     assert observed["yaw"] == pytest.approx(0.2)
 
 
+def test_navigation_final_pose_prefers_stopped_tf_over_mid_motion_amcl() -> None:
+    amcl = type(
+        "PoseWithCovarianceStamped",
+        (),
+        {
+            "header": type("Header", (), {"frame_id": "map"})(),
+            "pose": type(
+                "PoseWithCovariance",
+                (),
+                {
+                    "pose": type(
+                        "Pose",
+                        (),
+                        {
+                            "position": type("Position", (), {"x": 0.1, "y": -0.1})(),
+                            "orientation": type(
+                                "Quaternion",
+                                (),
+                                {"x": 0.0, "y": 0.0, "z": 0.0, "w": 1.0},
+                            )(),
+                        },
+                    )()
+                },
+            )(),
+        },
+    )()
+    transform = (
+        (0.15, -0.07, 0.0),
+        (0.0, 0.0, math.sin(0.64 / 2.0), math.cos(0.64 / 2.0)),
+    )
+
+    observed, source, auxiliary_amcl = NAVIGATION._final_pose_evidence(transform, amcl)
+
+    assert source == "tf_map_to_base"
+    assert observed["yaw"] == pytest.approx(0.64)
+    assert auxiliary_amcl["yaw"] == pytest.approx(0.0)
+
+
 def test_navigation_worker_classifies_already_satisfied_goal_and_motion() -> None:
     before = {"frame_id": "map", "x": 0.17, "y": 0.0, "yaw": 0.0}
     after = {"frame_id": "map", "x": 0.18, "y": 0.0, "yaw": 0.01}
@@ -623,6 +661,24 @@ def test_navigation_worker_reads_active_trajectory_planner_tolerance() -> None:
     tolerance = NAVIGATION._active_goal_tolerance(FakeRospy(), {"xy_m": 0.1, "yaw_rad": 0.1})
 
     assert tolerance == {"xy_m": 0.2, "yaw_rad": 0.15}
+
+
+def test_navigation_worker_rejects_tighter_contract_than_active_planner() -> None:
+    with pytest.raises(
+        NAVIGATION.RequestError,
+        match="active TrajectoryPlannerROS goal tolerance exceeds approved",
+    ):
+        NAVIGATION._require_compatible_goal_tolerance(
+            {"xy_m": 0.15, "yaw_rad": 0.2},
+            {"xy_m": 0.2, "yaw_rad": 0.15},
+        )
+
+
+def test_navigation_worker_accepts_compatible_contract() -> None:
+    NAVIGATION._require_compatible_goal_tolerance(
+        {"xy_m": 0.2, "yaw_rad": 0.2},
+        {"xy_m": 0.2, "yaw_rad": 0.15},
+    )
 
 
 @pytest.mark.parametrize(
