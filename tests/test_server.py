@@ -100,12 +100,18 @@ async def test_runtime_status_includes_mcp_and_interaction_provenance(
             return {
                 "running": True,
                 "operator_proposals": {"pending": 0, "total": 0},
+                "watchdog": {"healthy": True},
             }
 
     result = await LimoMCPService(gateway=RuntimeGateway()).runtime_status()
 
     assert result["mcp_process"]["server_name"] == "rosclaw-limo"
     assert result["interaction_plane"]["real_confirmation_ready"] is True
+    assert result["stop_evidence"] == {
+        "daemon_watchdog_healthy": True,
+        "chassis_command_loss_stop": "unverified",
+        "physical_stop_verified": False,
+    }
 
 
 def test_package_and_manifest_versions_match() -> None:
