@@ -215,13 +215,12 @@ async def test_live_mcp_patrol_readiness_protocol() -> None:
     )
 
     async with asyncio.timeout(60.0):
-        async with stdio_client(params) as (read, write):
-            async with ClientSession(read, write) as session:
-                await session.initialize()
-                called = await session.call_tool(
-                    "limo_get_readiness",
-                    {"transport": "roscli", "timeout_sec": 10.0},
-                )
+        async with stdio_client(params) as (read, write), ClientSession(read, write) as session:
+            await session.initialize()
+            called = await session.call_tool(
+                "limo_get_readiness",
+                {"transport": "roscli", "timeout_sec": 10.0},
+            )
 
     assert called.isError is False
     payload = json.loads(called.content[0].text)
@@ -239,25 +238,24 @@ async def test_live_mcp_peripheral_protocol() -> None:
     )
 
     async with asyncio.timeout(120.0):
-        async with stdio_client(params) as (read, write):
-            async with ClientSession(read, write) as session:
-                await session.initialize()
-                listed = await session.list_tools()
-                names = {tool.name for tool in listed.tools}
-                assert len(names) == 33
-                calls = (
-                    ("limo_list_peripherals", {}),
-                    ("limo_get_audio_state", {}),
-                    ("limo_measure_microphone", {"duration_sec": 1, "sample_rate_hz": 16000}),
-                    ("limo_get_display_state", {}),
-                    ("limo_get_platform_health", {}),
-                    ("limo_get_dabai_device_state", {}),
-                )
-                payloads: dict[str, dict[str, object]] = {}
-                for name, arguments in calls:
-                    called = await session.call_tool(name, arguments)
-                    assert called.isError is False
-                    payloads[name] = json.loads(called.content[0].text)
+        async with stdio_client(params) as (read, write), ClientSession(read, write) as session:
+            await session.initialize()
+            listed = await session.list_tools()
+            names = {tool.name for tool in listed.tools}
+            assert len(names) == 33
+            calls = (
+                ("limo_list_peripherals", {}),
+                ("limo_get_audio_state", {}),
+                ("limo_measure_microphone", {"duration_sec": 1, "sample_rate_hz": 16000}),
+                ("limo_get_display_state", {}),
+                ("limo_get_platform_health", {}),
+                ("limo_get_dabai_device_state", {}),
+            )
+            payloads: dict[str, dict[str, object]] = {}
+            for name, arguments in calls:
+                called = await session.call_tool(name, arguments)
+                assert called.isError is False
+                payloads[name] = json.loads(called.content[0].text)
 
     assert all(payload["ok"] is True for payload in payloads.values())
     assert payloads["limo_measure_microphone"]["audio_retained"] is False
