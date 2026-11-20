@@ -21,6 +21,9 @@ import yaml
 
 _READINESS_WORKER_PROTOCOL = "rosclaw.limo.readiness-worker.v1"
 _CAMERA_WORKER_PROTOCOL = "rosclaw.limo.camera-capture-worker.v1"
+# Cold Python 2, rospy and cv_bridge imports can be slow on a swapped Jetson.
+# This extends only the parent process budget, not the sensor wait request.
+_CAMERA_WORKER_STARTUP_BUDGET_SEC = 20.0
 _ROBOT_POSE_WORKER_PROTOCOL = "rosclaw.limo.robot-pose-worker.v1"
 _READINESS_WORKER_TOPICS = {
     ("/move_base/global_costmap/costmap", "nav_msgs/OccupancyGrid"): "global_costmap",
@@ -272,7 +275,7 @@ class RosCliReadOnlyClient:
             capture_output=True,
             text=True,
             input=json.dumps(request, separators=(",", ":")),
-            timeout=self.timeout_sec + 3.0,
+            timeout=self.timeout_sec + _CAMERA_WORKER_STARTUP_BUDGET_SEC,
             env=self._environment,
         )
         if len(result.stdout.encode("utf-8")) > 6_000_000:
