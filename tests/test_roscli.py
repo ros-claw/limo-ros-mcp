@@ -312,7 +312,60 @@ def test_roscli_camera_capture_uses_fixed_read_only_worker(monkeypatch: Any) -> 
     command, kwargs = calls[0]
     assert command[0] == "/usr/bin/python2"
     assert command[1].endswith("workers/limo_camera_capture_worker.py")
-    assert kwargs["timeout"] == 8.0
+    assert kwargs["timeout"] == 25.0
+
+
+@pytest.mark.parametrize(
+    ("sensor_timeout", "stream"),
+    [(0.5, "color"), (5.0, "infrared"), (10.0, "color")],
+)
+def test_camera_worker_allows_cold_start_without_extending_sensor_timeout(
+    monkeypatch: Any, sensor_timeout: float, stream: str
+) -> None:
+    png = b"\x89PNG\r\n\x1a\nfixture"
+    calls: list[dict[str, Any]] = []
+
+    def run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        calls.append(kwargs)
+        request = json.loads(kwargs["input"])
+        assert request["timeout_sec"] == sensor_timeout
+        assert request["stream"] == stream
+        # Model a 14-second interpreter/import startup plus the full sensor
+        # timeout; an insufficient parent deadline must fail like subprocess.
+        if kwargs["timeout"] < 14.0 + sensor_timeout:
+            raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+        response = {
+            "ok": True,
+            "protocol": "rosclaw.limo.camera-capture-worker.v1",
+            "stream": stream,
+            "png_sha256": f"sha256:{hashlib.sha256(png).hexdigest()}",
+            "png_base64": base64.b64encode(png).decode(),
+        }
+        return subprocess.CompletedProcess(command, 0, stdout=json.dumps(response), stderr="")
+
+    monkeypatch.setattr("shutil.which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr("subprocess.run", run)
+    monkeypatch.setattr("limo_ros_mcp.roscli.Path.is_file", lambda _path: True)
+    client = RosCliReadOnlyClient({}, timeout_sec=sensor_timeout)
+
+    metadata, observed = client.capture_camera_frame(stream=stream, max_dimension=640)
+
+    assert metadata["stream"] == stream and observed == png
+    assert len(calls) == 1
+    assert calls[0]["timeout"] == sensor_timeout + 20.0
+
+
+def test_camera_worker_output_limit_remains_enforced(monkeypatch: Any) -> None:
+    monkeypatch.setattr("shutil.which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr("limo_ros_mcp.roscli.Path.is_file", lambda _path: True)
+    monkeypatch.setattr(
+        "subprocess.run",
+        lambda command, **kw: subprocess.CompletedProcess(
+            command, 0, stdout="x" * 6_000_001, stderr=""
+        ),
+    )
+    with pytest.raises(RuntimeError, match="camera worker output exceeds"):
+        RosCliReadOnlyClient({}).capture_camera_frame(stream="color", max_dimension=640)
 
 
 def test_roscli_robot_pose_uses_fixed_map_base_worker(monkeypatch: Any) -> None:

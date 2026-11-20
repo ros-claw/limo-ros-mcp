@@ -1408,17 +1408,21 @@ class LimoMCPService:
     async def runtime_status(self) -> dict[str, Any]:
         try:
             runtime = await self._gateway.runtime_status()
-            return {
-                **runtime,
-                "mcp_process": mcp_process_status(),
-                "interaction_plane": interaction_plane_status(runtime),
-            }
         except Exception as exc:  # noqa: BLE001 - MCP boundary returns structured errors
-            return {
-                **_control_error("runtime_status", exc),
-                "mcp_process": mcp_process_status(),
-                "interaction_plane": interaction_plane_status({}),
-            }
+            runtime = _control_error("runtime_status", exc)
+        watchdog = runtime.get("watchdog")
+        return {
+            **runtime,
+            "mcp_process": mcp_process_status(),
+            "interaction_plane": interaction_plane_status(runtime),
+            "stop_evidence": {
+                "daemon_watchdog_healthy": (
+                    watchdog.get("healthy") if isinstance(watchdog, dict) else None
+                ),
+                "chassis_command_loss_stop": "unverified",
+                "physical_stop_verified": False,
+            },
+        }
 
     async def request_navigation(
         self,
